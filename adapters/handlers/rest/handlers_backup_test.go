@@ -14,11 +14,16 @@ package rest
 import (
 	"errors"
 	"fmt"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/go-openapi/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/weaviate/weaviate/adapters/handlers/rest/operations/backups"
+	entbackup "github.com/weaviate/weaviate/entities/backup"
 	"github.com/weaviate/weaviate/entities/models"
 	authzerrors "github.com/weaviate/weaviate/usecases/auth/authorization/errors"
 	"github.com/weaviate/weaviate/usecases/auth/authorization/rbac/rbacconf"
@@ -141,6 +146,81 @@ func TestIsRequestFromRootUser(t *testing.T) {
 			assert.Equal(t, tc.expectGet, h.isRequestFromRootUser(tc.principal))
 		})
 	}
+}
+
+func int64Ptr(v int64) *int64 { return &v }
+
+func TestParseBackupListPagination(t *testing.T) {
+	cases := []struct {
+		name       string
+		limit      *int64
+		cursor     *string
+		wantLimit  int
+		wantCursor string
+		wantErr    bool
+	}{
+		{name: "no pagination parameters stays unpaginated", wantLimit: 0},
+		{name: "limit alone starts the first page", limit: int64Ptr(25), wantLimit: 25},
+		{name: "limit and cursor continue paging", limit: int64Ptr(25), cursor: strPtr("token"), wantLimit: 25, wantCursor: "token"},
+		{name: "empty cursor is treated as absent", limit: int64Ptr(25), cursor: strPtr(""), wantLimit: 25},
+		{name: "cursor without limit is rejected", cursor: strPtr("token"), wantErr: true},
+		{name: "zero limit is rejected", limit: int64Ptr(0), wantErr: true},
+		{name: "negative limit is rejected", limit: int64Ptr(-3), wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			limit, cursor, err := parseBackupListPagination(tc.limit, tc.cursor)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.ErrorAs(t, err, &entbackup.ErrUnprocessable{}, "bad paging parameters must map to 422")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantLimit, limit)
+			assert.Equal(t, tc.wantCursor, cursor)
+		})
+	}
+}
+
+func TestBackupListCursorWithoutLimitReturns422(t *testing.T) {
+	// The validation fails before the manager is touched, so a nil manager
+	// proves the error path never reaches listing logic.
+	h := &backupHandlers{metricRequestsTotal: newBackupRequestsTotal(nil, nil)}
+
+	responder := h.list(backups.BackupsListParams{
+		Backend: "s3",
+		Order:   strPtr("asc"),
+		Cursor:  strPtr("opaque-token"),
+	}, nil)
+
+	unprocessable, ok := responder.(*backups.BackupsListUnprocessableEntity)
+	require.True(t, ok, "cursor without limit must be a 422 response, got %T", responder)
+	require.NotNil(t, unprocessable.Payload)
+	require.Len(t, unprocessable.Payload.Error, 1)
+	assert.Contains(t, unprocessable.Payload.Error[0].Message, "limit")
+}
+
+func TestBackupsListOKCursorHeader(t *testing.T) {
+	t.Run("written when there is a next page", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		backups.NewBackupsListOK().
+			WithPayload(models.BackupListResponse{}).
+			WithXNextCursor("opaque-token").
+			WriteResponse(rec, runtime.JSONProducer())
+
+		assert.Equal(t, 200, rec.Code)
+		assert.Equal(t, "opaque-token", rec.Header().Get("X-Next-Cursor"))
+		assert.Equal(t, "[]", strings.TrimSpace(rec.Body.String()))
+	})
+
+	t.Run("absent on the last page and for unpaginated requests", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		backups.NewBackupsListOK().
+			WithPayload(models.BackupListResponse{}).
+			WriteResponse(rec, runtime.JSONProducer())
+
+		assert.Empty(t, rec.Header().Get("X-Next-Cursor"))
+	})
 }
 
 func TestBackupCreateErrPayload(t *testing.T) {

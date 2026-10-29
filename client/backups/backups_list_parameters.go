@@ -25,6 +25,7 @@ import (
 	"github.com/go-openapi/runtime"
 	cr "github.com/go-openapi/runtime/client"
 	"github.com/go-openapi/strfmt"
+	"github.com/go-openapi/swag"
 )
 
 // NewBackupsListParams creates a new BackupsListParams object,
@@ -85,6 +86,18 @@ type BackupsListParams struct {
 	   Default: "desc"
 	*/
 	Order *string
+
+	/* Limit.
+
+	   Maximum number of backups returned in a single page. Providing a positive integer enables cursor-based pagination: the response body stays the same backup array, capped at this size, and when further readable backups remain an opaque continuation cursor is returned in the X-Next-Cursor response header. When omitted, all readable backups are returned.
+	*/
+	Limit *int64
+
+	/* Cursor.
+
+	   Opaque continuation cursor taken verbatim from the X-Next-Cursor response header of a previous paged request. It must be sent together with limit and with the same backend and order as the request that produced it.
+	*/
+	Cursor *string
 
 	timeout    time.Duration
 	Context    context.Context
@@ -172,6 +185,28 @@ func (o *BackupsListParams) SetOrder(order *string) {
 	o.Order = order
 }
 
+// WithLimit adds the limit to the backups list params
+func (o *BackupsListParams) WithLimit(limit *int64) *BackupsListParams {
+	o.SetLimit(limit)
+	return o
+}
+
+// SetLimit adds the limit to the backups list params
+func (o *BackupsListParams) SetLimit(limit *int64) {
+	o.Limit = limit
+}
+
+// WithCursor adds the cursor to the backups list params
+func (o *BackupsListParams) WithCursor(cursor *string) *BackupsListParams {
+	o.SetCursor(cursor)
+	return o
+}
+
+// SetCursor adds the cursor to the backups list params
+func (o *BackupsListParams) SetCursor(cursor *string) {
+	o.Cursor = cursor
+}
+
 // WriteToRequest writes these params to a swagger request
 func (o *BackupsListParams) WriteToRequest(r runtime.ClientRequest, reg strfmt.Registry) error {
 
@@ -197,6 +232,40 @@ func (o *BackupsListParams) WriteToRequest(r runtime.ClientRequest, reg strfmt.R
 		if qOrder != "" {
 
 			if err := r.SetQueryParam("order", qOrder); err != nil {
+				return err
+			}
+		}
+	}
+
+	if o.Limit != nil {
+
+		// query param limit
+		var qrLimit int64
+
+		if o.Limit != nil {
+			qrLimit = *o.Limit
+		}
+		qLimit := swag.FormatInt64(qrLimit)
+		if qLimit != "" {
+
+			if err := r.SetQueryParam("limit", qLimit); err != nil {
+				return err
+			}
+		}
+	}
+
+	if o.Cursor != nil {
+
+		// query param cursor
+		var qrCursor string
+
+		if o.Cursor != nil {
+			qrCursor = *o.Cursor
+		}
+		qCursor := qrCursor
+		if qCursor != "" {
+
+			if err := r.SetQueryParam("cursor", qCursor); err != nil {
 				return err
 			}
 		}

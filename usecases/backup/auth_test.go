@@ -123,6 +123,18 @@ func Test_Authorization(t *testing.T) {
 			probesBlanket:    true,
 			classes:          []string{"ABC"},
 		},
+		{
+			// ListPage applies the same permission model as List, re-running it
+			// on every page. Its additional args are backend, sortingOrder,
+			// includeBaseBackupID, limit and cursor.
+			methodName:       "ListPage",
+			additionalArgs:   []interface{}{"filesystem", func(s string) *string { return &s }("desc"), false, 1, ""},
+			expectedVerb:     authorization.READ,
+			expectedResource: authorization.Backups("ABC")[0],
+			filtered:         true,
+			probesBlanket:    true,
+			classes:          []string{"ABC"},
+		},
 	}
 
 	t.Run("verify that a test for every public method exists", func(t *testing.T) {
@@ -187,8 +199,8 @@ func Test_Authorization(t *testing.T) {
 					args := append([]interface{}{context.Background(), pr}, test.additionalArgs...)
 					out, _ := callFuncByName(s, test.methodName, args...)
 					err, _ := out[len(out)-1].Interface().(error)
-					if test.methodName == "List" {
-						// List drops a denied backup from the response instead.
+					if test.methodName == "List" || test.methodName == "ListPage" {
+						// Listing drops a denied backup from the response instead.
 						require.NoError(t, err)
 						assert.Empty(t, *out[0].Interface().(*models.BackupListResponse))
 						return
@@ -204,7 +216,7 @@ func Test_Authorization(t *testing.T) {
 	t.Run("an authorizer failure is not reported as a denial", func(t *testing.T) {
 		for _, test := range tests {
 			switch test.methodName {
-			case "BackupStatus", "RestorationStatus", "Cancel", "CancelRestore", "List":
+			case "BackupStatus", "RestorationStatus", "Cancel", "CancelRestore", "List", "ListPage":
 			default:
 				continue
 			}
@@ -269,8 +281,8 @@ func newAuthzTestScheduler(t *testing.T, methodName string, classes []string, au
 
 	modcapabilities.On("Initialize", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	// List reads its backups from AllBackups.
-	if methodName == "List" {
+	// List and ListPage read their backups from AllBackups.
+	if methodName == "List" || methodName == "ListPage" {
 		modcapabilities.On("AllBackups", mock.Anything).Return([]*backup.DistributedBackupDescriptor{&dd}, nil)
 	}
 

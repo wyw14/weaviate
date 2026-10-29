@@ -381,10 +381,31 @@ func (s *backupHandlers) cancelRestore(params backups.BackupsRestoreCancelParams
 func (s *backupHandlers) list(params backups.BackupsListParams,
 	principal *models.Principal,
 ) middleware.Responder {
-	payload, err := s.manager.List(
-		params.HTTPRequest.Context(), principal, params.Backend, params.Order,
-		s.isRequestFromRootUser(principal),
+	limit, cursorToken, perr := parseBackupListPagination(params.Limit, params.Cursor)
+	if perr != nil {
+		s.metricRequestsTotal.logError("", perr)
+		return backups.NewBackupsListUnprocessableEntity().
+			WithPayload(errPayloadFromSingleErr(principal, perr))
+	}
+
+	var (
+		payload     *models.BackupListResponse
+		nextCursor  string
+		err         error
+		includeBase = s.isRequestFromRootUser(principal)
 	)
+	if params.Limit == nil {
+		// No pagination parameters: preserve the original full-array behavior,
+		// including the current permission check and sort order.
+		payload, err = s.manager.List(
+			params.HTTPRequest.Context(), principal, params.Backend, params.Order, includeBase,
+		)
+	} else {
+		payload, nextCursor, err = s.manager.ListPage(
+			params.HTTPRequest.Context(), principal, params.Backend, params.Order,
+			includeBase, limit, cursorToken,
+		)
+	}
 	if err != nil {
 		s.metricRequestsTotal.logError("", err)
 		switch {
@@ -401,7 +422,38 @@ func (s *backupHandlers) list(params backups.BackupsListParams,
 	}
 
 	s.metricRequestsTotal.logOk("")
-	return backups.NewBackupsListOK().WithPayload(*payload)
+	resp := backups.NewBackupsListOK().WithPayload(*payload)
+	// The header is emitted only when another readable page remains. The
+	// generated responder writes it when the value is non-empty.
+	if nextCursor != "" {
+		resp.SetXNextCursor(nextCursor)
+	}
+	return resp
+}
+
+// parseBackupListPagination normalizes the optional limit/cursor query
+// parameters. A nil limit means the request is not paginated and cursor must
+// be absent; otherwise limit must be a positive integer. The response body
+// shape is unchanged either way.
+func parseBackupListPagination(limit *int64, cursor *string) (int, string, error) {
+	cursorToken := ""
+	if cursor != nil {
+		cursorToken = *cursor
+	}
+
+	if limit == nil {
+		if cursorToken != "" {
+			return 0, "", backup.NewErrUnprocessable(errors.New(
+				"the cursor query parameter requires the limit query parameter; repeat the limit used for the first page"))
+		}
+		return 0, "", nil
+	}
+
+	if *limit < 1 {
+		return 0, "", backup.NewErrUnprocessable(errors.New(
+			"the limit query parameter must be a positive integer"))
+	}
+	return int(*limit), cursorToken, nil
 }
 
 func setupBackupHandlers(api *operations.WeaviateAPI,

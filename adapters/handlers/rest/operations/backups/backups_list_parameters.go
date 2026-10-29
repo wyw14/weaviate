@@ -23,6 +23,7 @@ import (
 	"github.com/go-openapi/runtime"
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/strfmt"
+	"github.com/go-openapi/swag"
 	"github.com/go-openapi/validate"
 )
 
@@ -60,6 +61,14 @@ type BackupsListParams struct {
 	  Default: "desc"
 	*/
 	Order *string
+	/*Maximum number of backups returned in a single page. Providing a positive integer enables cursor-based pagination: the response body stays the same backup array, capped at this size, and when further readable backups remain an opaque continuation cursor is returned in the X-Next-Cursor response header. When omitted, all readable backups are returned.
+	  In: query
+	*/
+	Limit *int64
+	/*Opaque continuation cursor taken verbatim from the X-Next-Cursor response header of a previous paged request. It must be sent together with limit and with the same backend and order as the request that produced it.
+	  In: query
+	*/
+	Cursor *string
 }
 
 // BindRequest both binds and validates a request, it assumes that complex things implement a Validatable(strfmt.Registry) error interface
@@ -80,6 +89,16 @@ func (o *BackupsListParams) BindRequest(r *http.Request, route *middleware.Match
 
 	qOrder, qhkOrder, _ := qs.GetOK("order")
 	if err := o.bindOrder(qOrder, qhkOrder, route.Formats); err != nil {
+		res = append(res, err)
+	}
+
+	qLimit, qhkLimit, _ := qs.GetOK("limit")
+	if err := o.bindLimit(qLimit, qhkLimit, route.Formats); err != nil {
+		res = append(res, err)
+	}
+
+	qCursor, qhkCursor, _ := qs.GetOK("cursor")
+	if err := o.bindCursor(qCursor, qhkCursor, route.Formats); err != nil {
 		res = append(res, err)
 	}
 	if len(res) > 0 {
@@ -131,6 +150,62 @@ func (o *BackupsListParams) validateOrder(formats strfmt.Registry) error {
 	if err := validate.EnumCase("order", "query", *o.Order, []interface{}{"asc", "desc"}, true); err != nil {
 		return err
 	}
+
+	return nil
+}
+
+// bindLimit binds and validates parameter Limit from query.
+func (o *BackupsListParams) bindLimit(rawData []string, hasKey bool, formats strfmt.Registry) error {
+	var raw string
+	if len(rawData) > 0 {
+		raw = rawData[len(rawData)-1]
+	}
+
+	// Required: false
+	// AllowEmptyValue: false
+
+	if raw == "" { // empty values pass all other validations
+		return nil
+	}
+
+	value, err := swag.ConvertInt64(raw)
+	if err != nil {
+		return errors.InvalidType("limit", "query", "int64", raw)
+	}
+	o.Limit = &value
+
+	if err := o.validateLimit(formats); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateLimit carries on validations for parameter Limit
+func (o *BackupsListParams) validateLimit(formats strfmt.Registry) error {
+
+	if err := validate.MinimumInt("limit", "query", *o.Limit, 1, false); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// bindCursor binds and validates parameter Cursor from query.
+func (o *BackupsListParams) bindCursor(rawData []string, hasKey bool, formats strfmt.Registry) error {
+	var raw string
+	if len(rawData) > 0 {
+		raw = rawData[len(rawData)-1]
+	}
+
+	// Required: false
+	// AllowEmptyValue: false
+
+	if raw == "" { // empty values pass all other validations
+		return nil
+	}
+
+	o.Cursor = &raw
 
 	return nil
 }

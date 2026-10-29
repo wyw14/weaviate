@@ -1725,6 +1725,20 @@ func init() {
             "description": "Order of returned list of backups based on creation time. (asc or desc)",
             "name": "order",
             "in": "query"
+          },
+          {
+            "minimum": 1,
+            "type": "integer",
+            "format": "int64",
+            "description": "Maximum number of backups returned in a single page. Providing a positive integer enables cursor-based pagination: the response body stays the same backup array, capped at this size, and when further readable backups remain an opaque continuation cursor is returned in the X-Next-Cursor response header. When omitted, all readable backups are returned.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "Opaque continuation cursor taken verbatim from the X-Next-Cursor response header of a previous paged request. It must be sent together with limit and with the same backend and order as the request that produced it.",
+            "name": "cursor",
+            "in": "query"
           }
         ],
         "responses": {
@@ -1732,6 +1746,12 @@ func init() {
             "description": "Successfully retrieved the list of backups in progress.",
             "schema": {
               "$ref": "#/definitions/BackupListResponse"
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "type": "string",
+                "description": "Opaque cursor for fetching the next page with the same backend, order and limit. Present only when limit was provided and further readable backups remain; absent on the last page and for unpaginated requests."
+              }
             }
           },
           "401": {
@@ -14534,6 +14554,20 @@ func init() {
             "description": "Order of returned list of backups based on creation time. (asc or desc)",
             "name": "order",
             "in": "query"
+          },
+          {
+            "minimum": 1,
+            "type": "integer",
+            "format": "int64",
+            "description": "Maximum number of backups returned in a single page. Providing a positive integer enables cursor-based pagination: the response body stays the same backup array, capped at this size, and when further readable backups remain an opaque continuation cursor is returned in the X-Next-Cursor response header. When omitted, all readable backups are returned.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "Opaque continuation cursor taken verbatim from the X-Next-Cursor response header of a previous paged request. It must be sent together with limit and with the same backend and order as the request that produced it.",
+            "name": "cursor",
+            "in": "query"
           }
         ],
         "responses": {
@@ -14541,6 +14575,12 @@ func init() {
             "description": "Successfully retrieved the list of backups in progress.",
             "schema": {
               "$ref": "#/definitions/BackupListResponse"
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "type": "string",
+                "description": "Opaque cursor for fetching the next page with the same backend, order and limit. Present only when limit was provided and further readable backups remain; absent on the last page and for unpaginated requests."
+              }
             }
           },
           "401": {

@@ -21,13 +21,17 @@ import (
 	"net/url"
 	golangswaggerpaths "path"
 	"strings"
+
+	"github.com/go-openapi/swag"
 )
 
 // BackupsListURL generates an URL for the backups list operation
 type BackupsListURL struct {
 	Backend string
 
-	Order *string
+	Order  *string
+	Limit  *int64
+	Cursor *string
 
 	_basePath string
 	// avoid unkeyed usage
@@ -76,6 +80,22 @@ func (o *BackupsListURL) Build() (*url.URL, error) {
 	}
 	if orderQ != "" {
 		qs.Set("order", orderQ)
+	}
+
+	var limitQ string
+	if o.Limit != nil {
+		limitQ = swag.FormatInt64(*o.Limit)
+	}
+	if limitQ != "" {
+		qs.Set("limit", limitQ)
+	}
+
+	var cursorQ string
+	if o.Cursor != nil {
+		cursorQ = *o.Cursor
+	}
+	if cursorQ != "" {
+		qs.Set("cursor", cursorQ)
 	}
 
 	_result.RawQuery = qs.Encode()

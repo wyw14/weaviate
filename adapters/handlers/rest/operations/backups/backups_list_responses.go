@@ -34,6 +34,11 @@ swagger:response backupsListOK
 */
 type BackupsListOK struct {
 
+	/*Opaque cursor for fetching the next page with the same backend, order and limit. Present only when limit was provided and further readable backups remain; absent on the last page and for unpaginated requests.
+
+	 */
+	XNextCursor string `json:"X-Next-Cursor,omitempty"`
+
 	/*
 	  In: Body
 	*/
@@ -44,6 +49,17 @@ type BackupsListOK struct {
 func NewBackupsListOK() *BackupsListOK {
 
 	return &BackupsListOK{}
+}
+
+// WithXNextCursor adds the x next cursor to the backups list o k response
+func (o *BackupsListOK) WithXNextCursor(xnextCursor string) *BackupsListOK {
+	o.XNextCursor = xnextCursor
+	return o
+}
+
+// SetXNextCursor sets the x next cursor to the backups list o k response
+func (o *BackupsListOK) SetXNextCursor(xnextCursor string) {
+	o.XNextCursor = xnextCursor
 }
 
 // WithPayload adds the payload to the backups list o k response
@@ -59,6 +75,12 @@ func (o *BackupsListOK) SetPayload(payload models.BackupListResponse) {
 
 // WriteResponse to the client
 func (o *BackupsListOK) WriteResponse(rw http.ResponseWriter, producer runtime.Producer) {
+
+	// response header X-Next-Cursor
+	xnextCursor := o.XNextCursor
+	if xnextCursor != "" {
+		rw.Header().Set("X-Next-Cursor", xnextCursor)
+	}
 
 	rw.WriteHeader(200)
 	payload := o.Payload

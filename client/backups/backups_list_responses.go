@@ -80,6 +80,11 @@ BackupsListOK describes a response with status code 200, with default header val
 Successfully retrieved the list of backups in progress.
 */
 type BackupsListOK struct {
+
+	/* Opaque cursor for fetching the next page with the same backend, order and limit. Present only when limit was provided and further readable backups remain; absent on the last page and for unpaginated requests.
+	 */
+	XNextCursor string
+
 	Payload models.BackupListResponse
 }
 
@@ -126,6 +131,13 @@ func (o *BackupsListOK) GetPayload() models.BackupListResponse {
 }
 
 func (o *BackupsListOK) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
+
+	// hydrates response header X-Next-Cursor
+	hdrXNextCursor := response.GetHeader("X-Next-Cursor")
+
+	if hdrXNextCursor != "" {
+		o.XNextCursor = hdrXNextCursor
+	}
 
 	// response payload
 	if err := consumer.Consume(response.Body(), &o.Payload); err != nil && err != io.EOF {

@@ -13,6 +13,7 @@ package backup
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,6 +67,63 @@ const (
 	AllBackupsOrderAsc  AllBackupsOrder = "asc"
 	AllBackupsOrderDesc AllBackupsOrder = "desc"
 )
+
+// backupListCursorVersion is the only cursor encoding this build emits or
+// accepts. Bump it if the cursor payload changes shape.
+const backupListCursorVersion = 1
+
+// backupListCursor is the opaque, URL-safe position marker returned in the
+// X-Next-Cursor response header. It pins the request to the same backend and
+// order and records the composite sort key (StartedAt, ID) of the last backup
+// on the previous page. It never carries a permission decision: every paged
+// request runs the readability check again.
+type backupListCursor struct {
+	Version   int       `json:"v"`
+	Backend   string    `json:"b"`
+	Order     string    `json:"o"`
+	StartedAt time.Time `json:"t"`
+	ID        string    `json:"id"`
+}
+
+func encodeBackupListCursor(c *backupListCursor) (string, error) {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+// decodeBackupListCursor parses an X-Next-Cursor token and verifies it is
+// compatible with the request that carries it. Every failure is reported as a
+// plain error; callers wrap it in backup.ErrUnprocessable so it surfaces as
+// 422 with a clear message.
+func decodeBackupListCursor(token string, backend string, order AllBackupsOrder) (*backupListCursor, error) {
+	data, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return nil, fmt.Errorf("malformed backup list cursor: %w", err)
+	}
+
+	var c backupListCursor
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, fmt.Errorf("malformed backup list cursor: %w", err)
+	}
+
+	if c.Version != backupListCursorVersion {
+		return nil, fmt.Errorf("unsupported backup list cursor version %d", c.Version)
+	}
+	if c.Backend != backend {
+		return nil, fmt.Errorf("backup list cursor was issued for backend %q, but this request targets backend %q; restart paging on this backend", c.Backend, backend)
+	}
+	if c.Order != string(order) {
+		return nil, fmt.Errorf("backup list cursor was issued for order %q, but this request uses order %q; repeat the original order", c.Order, order)
+	}
+	if c.ID == "" || c.StartedAt.IsZero() {
+		return nil, errors.New("malformed backup list cursor: missing page position")
+	}
+
+	c.StartedAt = c.StartedAt.UTC()
+	return &c, nil
+}
 
 // Scheduler assigns backup operations to coordinators.
 type Scheduler struct {
@@ -741,41 +799,125 @@ func (s *Scheduler) CancelRestore(ctx context.Context, principal *models.Princip
 }
 
 func (s *Scheduler) List(ctx context.Context, principal *models.Principal, backend string, sortingOrder *string, includeBaseBackupID bool) (*models.BackupListResponse, error) {
-	var err error
+	resp, _, err := s.listPage(ctx, principal, backend, sortingOrder, includeBaseBackupID, 0, "")
+	return resp, err
+}
+
+// ListPage returns one page of the backups the caller may read on backend.
+// limit is the requested page size; cursorToken is the X-Next-Cursor value of
+// the preceding page, or "" for the first page. The returned nextCursor token
+// is non-empty exactly when further readable backups remain after this page.
+//
+// Readability is re-evaluated on every call against the caller's current
+// permissions, and sorting/paging run on that freshly filtered set, so a
+// cursor can never reach a backup the caller is not allowed to see. The
+// listing is not a snapshot: backups added or removed between pages are only
+// reflected from the cursor position onward.
+func (s *Scheduler) ListPage(ctx context.Context, principal *models.Principal, backend string, sortingOrder *string,
+	includeBaseBackupID bool, limit int, cursorToken string,
+) (*models.BackupListResponse, string, error) {
+	return s.listPage(ctx, principal, backend, sortingOrder, includeBaseBackupID, limit, cursorToken)
+}
+
+func (s *Scheduler) listPage(ctx context.Context, principal *models.Principal, backend string, sortingOrder *string,
+	includeBaseBackupID bool, limit int, cursorToken string,
+) (response *models.BackupListResponse, nextCursor string, err error) {
 	defer func(begin time.Time) {
 		logOperation(s.logger, "list_backup", "", backend, begin, err)
 	}(time.Now())
 
+	order := AllBackupsOrder(*sortingOrder)
+
+	paginated := limit > 0
+	if cursorToken != "" && !paginated {
+		err = backup.NewErrUnprocessable(errors.New("the cursor query parameter requires the limit query parameter"))
+		return nil, "", err
+	}
+
+	var cursor *backupListCursor
+	if cursorToken != "" {
+		cursor, err = decodeBackupListCursor(cursorToken, backend, order)
+		if err != nil {
+			err = backup.NewErrUnprocessable(err)
+			return nil, "", err
+		}
+	}
+
 	backupBackend, err := s.backends.BackupBackend(backend, modulecapabilities.BackendUseCaseBackup)
 	if err != nil {
 		err = fmt.Errorf("no backup backend %q: %w, did you enable the right module?", backend, err)
-		return nil, backup.NewErrUnprocessable(err)
+		err = backup.NewErrUnprocessable(err)
+		return nil, "", err
 	}
 
 	backups, err := backupBackend.AllBackups(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	slices.SortFunc(backups, sortBackups(AllBackupsOrder(*sortingOrder)))
+	if paginated {
+		slices.SortFunc(backups, sortBackupsPaginated(order))
+	} else {
+		slices.SortFunc(backups, sortBackups(order))
+	}
 
 	classes := make([][]string, len(backups))
 	for i, b := range backups {
 		classes[i] = b.Classes()
 	}
+	// Permissions are checked on every page request against the current set
+	// of backups; the cursor never carries an authorization result.
 	readable, err := s.canReadBackups(ctx, principal, classes)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	response := make(models.BackupListResponse, 0, len(backups))
+	ordered := make([]*backup.DistributedBackupDescriptor, 0, len(backups))
+	orderedClasses := make([][]string, 0, len(backups))
 	for i, b := range backups {
 		if !readable[i] {
 			continue
 		}
+		ordered = append(ordered, b)
+		orderedClasses = append(orderedClasses, classes[i])
+	}
+
+	start := 0
+	if cursor != nil {
+		start = pageStartAfterCursor(ordered, order, cursor)
+	}
+
+	page := ordered
+	if paginated {
+		end := start + limit
+		// The second clause guards an absurdly large limit from wrapping the
+		// addition below zero.
+		if end > len(ordered) || end < start {
+			end = len(ordered)
+		}
+		page = ordered[start:end]
+		if end < len(ordered) {
+			last := page[len(page)-1]
+			token, encodeErr := encodeBackupListCursor(&backupListCursor{
+				Version:   backupListCursorVersion,
+				Backend:   backend,
+				Order:     string(order),
+				StartedAt: last.StartedAt.UTC(),
+				ID:        last.ID,
+			})
+			if encodeErr != nil {
+				err = encodeErr
+				return nil, "", err
+			}
+			nextCursor = token
+		}
+	}
+
+	resp := make(models.BackupListResponse, 0, len(page))
+	for i, b := range page {
 		item := &models.BackupListResponseItems0{
 			ID:          b.ID,
-			Classes:     classes[i],
+			Classes:     orderedClasses[start+i],
 			Status:      string(b.Status),
 			StartedAt:   strfmt.DateTime(b.StartedAt.UTC()),
 			CompletedAt: strfmt.DateTime(b.CompletedAt.UTC()),
@@ -786,10 +928,10 @@ func (s *Scheduler) List(ctx context.Context, principal *models.Principal, backe
 		if includeBaseBackupID {
 			item.IncrementalBaseBackupID = b.BaseBackupID
 		}
-		response = append(response, item)
+		resp = append(resp, item)
 	}
 
-	return &response, nil
+	return &resp, nextCursor, nil
 }
 
 // canReadBackups reports for each backup whether the caller may READ every
@@ -854,7 +996,31 @@ func (s *Scheduler) canReadBackups(ctx context.Context, principal *models.Princi
 	return readable, nil
 }
 
+// sortBackups keeps the historical StartedAt ordering used by the unpaginated
+// list endpoint; equal start times keep their pre-existing relative order.
 func sortBackups(order AllBackupsOrder) func(a, b *backup.DistributedBackupDescriptor) int {
+	return sortBackupsByStartedAt(order)
+}
+
+// sortBackupsPaginated additionally breaks equal StartedAt ties by backup ID
+// so cursor paging has a stable total order: backups sharing a start time can
+// neither be skipped nor repeated across pages, in either direction.
+func sortBackupsPaginated(order AllBackupsOrder) func(a, b *backup.DistributedBackupDescriptor) int {
+	byStartedAt := sortBackupsByStartedAt(order)
+	cmp := 1
+	if order == AllBackupsOrderDesc {
+		cmp = -1
+	}
+
+	return func(a, b *backup.DistributedBackupDescriptor) int {
+		if c := byStartedAt(a, b); c != 0 {
+			return c
+		}
+		return cmp * strings.Compare(a.ID, b.ID)
+	}
+}
+
+func sortBackupsByStartedAt(order AllBackupsOrder) func(a, b *backup.DistributedBackupDescriptor) int {
 	cmp := 1
 	if order == AllBackupsOrderDesc {
 		cmp = -1
@@ -870,6 +1036,36 @@ func sortBackups(order AllBackupsOrder) func(a, b *backup.DistributedBackupDescr
 
 		return 0
 	}
+}
+
+// compareBackupKeys orders the (StartedAt, backup ID) composite key used to
+// position list pages. Returns -1/0/1 like bytes.Compare.
+func compareBackupKeys(at time.Time, id string, otherAt time.Time, otherID string) int {
+	if at.Before(otherAt) {
+		return -1
+	}
+	if at.After(otherAt) {
+		return 1
+	}
+	return strings.Compare(id, otherID)
+}
+
+// pageStartAfterCursor returns the index of the first ordered backup strictly
+// past the cursor position. When the cursor backup still exists this is its
+// index + 1; when it was deleted or became unreadable the scan lands on the
+// next key in the requested direction, so continuation never skips or repeats
+// a currently readable backup.
+func pageStartAfterCursor(ordered []*backup.DistributedBackupDescriptor, order AllBackupsOrder, cursor *backupListCursor) int {
+	for i, b := range ordered {
+		cmp := compareBackupKeys(b.StartedAt, b.ID, cursor.StartedAt, cursor.ID)
+		if order == AllBackupsOrderAsc && cmp > 0 {
+			return i
+		}
+		if order == AllBackupsOrderDesc && cmp < 0 {
+			return i
+		}
+	}
+	return len(ordered)
 }
 
 func coordBackend(provider BackupBackendProvider, backend, id, overrideBucket, overridePath string) (coordStore, error) {
