@@ -82,7 +82,7 @@ type ObjectsGetParams struct {
 
 	/* Include.
 
-	   Include additional information, such as classification information. Allowed values include: `classification`, `vector` and `interpretation`.
+	   Include additional information, such as classification information. Allowed values include: `classification`, `vector`, `vector:<target-name>` and `interpretation`. `vector` returns all vectors of the object; `vector:<target-name>` (multi-vector collections only) returns only the named target vector, e.g. `vector:title`. Multiple items can be combined comma-separated; when both `vector` and `vector:<target-name>` are given, all vectors are returned.
 	*/
 	Include *string
 

@@ -121,5 +121,5 @@ func (m *Manager) Query(ctx context.Context, principal *models.Principal, params
 		m.trackUsageList(res)
 	}
 
-	return res.ObjectsWithVector(q.Additional.Vector), nil
+	return res.ObjectsWithVectorSelection(q.Additional.Vector, q.Additional.Vectors), nil
 }

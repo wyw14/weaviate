@@ -1130,10 +1130,249 @@ func TestParseIncludeParam_VectorIncludesTargetVectors(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, out.Vector)
 	require.True(t, out.IncludeAllTargetVectors)
+	require.Empty(t, out.Vectors)
 
 	out, err = parseIncludeParam(nil, nil, false, nil)
 	require.NoError(t, err)
 	require.False(t, out.IncludeAllTargetVectors)
+}
+
+func TestParseIncludeParam_VectorTargetSelection(t *testing.T) {
+	namedClass := &models.Class{
+		Class: "MultiVec",
+		VectorConfig: map[string]models.VectorConfig{
+			"vecA": {VectorIndexType: "hnsw"},
+			"vecB": {VectorIndexType: "hnsw"},
+		},
+	}
+	legacyClass := &models.Class{Class: "Legacy"}
+
+	t.Run("single target vector selection", func(t *testing.T) {
+		include := "vector:vecA"
+		out, err := parseIncludeParam(&include, nil, false, namedClass)
+		require.NoError(t, err)
+		require.False(t, out.Vector, "specific target must not request the legacy vector")
+		require.False(t, out.IncludeAllTargetVectors)
+		require.Equal(t, []string{"vecA"}, out.Vectors)
+	})
+
+	t.Run("multiple target vectors are kept in order and deduplicated", func(t *testing.T) {
+		include := "vector:vecA,vector:vecB,vector:vecA"
+		out, err := parseIncludeParam(&include, nil, false, namedClass)
+		require.NoError(t, err)
+		require.Equal(t, []string{"vecA", "vecB"}, out.Vectors)
+	})
+
+	t.Run("combines with other include items", func(t *testing.T) {
+		include := "classification,vector:vecB"
+		out, err := parseIncludeParam(&include, nil, false, namedClass)
+		require.NoError(t, err)
+		require.True(t, out.Classification)
+		require.True(t, out.RefMeta)
+		require.Equal(t, []string{"vecB"}, out.Vectors)
+		require.False(t, out.Vector)
+	})
+
+	t.Run("empty target name is rejected", func(t *testing.T) {
+		include := "vector:"
+		_, err := parseIncludeParam(&include, nil, false, namedClass)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "vector:")
+	})
+
+	t.Run("target not in the vector config is rejected", func(t *testing.T) {
+		include := "vector:vecC"
+		_, err := parseIncludeParam(&include, nil, false, namedClass)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "vecC")
+		require.Contains(t, err.Error(), "MultiVec")
+	})
+
+	t.Run("target selection on a legacy vector class is rejected", func(t *testing.T) {
+		include := "vector:vecA"
+		_, err := parseIncludeParam(&include, nil, false, legacyClass)
+		require.Error(t, err)
+	})
+
+	t.Run("target selection without a loaded class is rejected", func(t *testing.T) {
+		// class-less (deprecated) objects list cannot validate a target name
+		include := "vector:vecA"
+		_, err := parseIncludeParam(&include, nil, false, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "class")
+	})
+
+	t.Run("bare vector takes precedence over target selection", func(t *testing.T) {
+		include := "vector:vecA,vector"
+		out, err := parseIncludeParam(&include, nil, false, namedClass)
+		require.NoError(t, err)
+		require.True(t, out.Vector, "full vector request must win")
+		require.True(t, out.IncludeAllTargetVectors)
+		require.Empty(t, out.Vectors,
+			"specific targets must be dropped so remote marshaling does not trim the full payload")
+	})
+
+	t.Run("unrecognized include item is still rejected", func(t *testing.T) {
+		include := "vector:vecA,bogus"
+		_, err := parseIncludeParam(&include, nil, false, namedClass)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "bogus")
+	})
+}
+
+func namedVectorClass() *models.Class {
+	return &models.Class{
+		Class: "MultiVec",
+		VectorConfig: map[string]models.VectorConfig{
+			"vecA": {VectorIndexType: "hnsw"},
+			"vecB": {VectorIndexType: "hnsw"},
+		},
+	}
+}
+
+func TestGetObject_IncludeVectorTargetSelection(t *testing.T) {
+	t.Run("valid target is forwarded to the manager", func(t *testing.T) {
+		m := &fakeManager{
+			getObjectReturn:             &models.Object{Class: "MultiVec", ID: "123"},
+			getObjectClassFromNameClass: namedVectorClass(),
+		}
+		h := &objectHandlers{manager: m, metricRequestsTotal: &fakeMetricRequestsTotal{}}
+
+		include := "vector:vecA"
+		res := h.getObject(objects.ObjectsClassGetParams{
+			HTTPRequest: httptest.NewRequest("GET", "/v1/objects/MultiVec/123?include=vector:vecA", nil),
+			ClassName:   "MultiVec",
+			ID:          "123",
+			Include:     &include,
+		}, nil)
+
+		require.IsType(t, &objects.ObjectsClassGetOK{}, res)
+		assert.False(t, m.getObjectAdditionalCaptured.Vector)
+		assert.Equal(t, []string{"vecA"}, m.getObjectAdditionalCaptured.Vectors)
+	})
+
+	t.Run("unknown target returns a bad request and never reaches the manager", func(t *testing.T) {
+		m := &fakeManager{
+			getObjectReturn:             &models.Object{Class: "MultiVec", ID: "123"},
+			getObjectClassFromNameClass: namedVectorClass(),
+		}
+		h := &objectHandlers{manager: m, metricRequestsTotal: &fakeMetricRequestsTotal{}}
+
+		include := "vector:vecC"
+		res := h.getObject(objects.ObjectsClassGetParams{
+			HTTPRequest: httptest.NewRequest("GET", "/v1/objects/MultiVec/123", nil),
+			ClassName:   "MultiVec",
+			ID:          "123",
+			Include:     &include,
+		}, nil)
+
+		require.IsType(t, &objects.ObjectsClassGetBadRequest{}, res)
+		assert.Empty(t, m.getObjectAdditionalCaptured.Vectors,
+			"GetObject must not be called for an invalid target selection")
+	})
+
+	t.Run("empty target returns a bad request", func(t *testing.T) {
+		m := &fakeManager{
+			getObjectReturn:             &models.Object{Class: "MultiVec", ID: "123"},
+			getObjectClassFromNameClass: namedVectorClass(),
+		}
+		h := &objectHandlers{manager: m, metricRequestsTotal: &fakeMetricRequestsTotal{}}
+
+		include := "vector:"
+		res := h.getObject(objects.ObjectsClassGetParams{
+			HTTPRequest: httptest.NewRequest("GET", "/v1/objects/MultiVec/123", nil),
+			ClassName:   "MultiVec",
+			ID:          "123",
+			Include:     &include,
+		}, nil)
+
+		require.IsType(t, &objects.ObjectsClassGetBadRequest{}, res)
+	})
+
+	t.Run("include=vector together with a target requests all vectors", func(t *testing.T) {
+		m := &fakeManager{
+			getObjectReturn:             &models.Object{Class: "MultiVec", ID: "123"},
+			getObjectClassFromNameClass: namedVectorClass(),
+		}
+		h := &objectHandlers{manager: m, metricRequestsTotal: &fakeMetricRequestsTotal{}}
+
+		include := "vector:vecA,vector"
+		res := h.getObject(objects.ObjectsClassGetParams{
+			HTTPRequest: httptest.NewRequest("GET", "/v1/objects/MultiVec/123", nil),
+			ClassName:   "MultiVec",
+			ID:          "123",
+			Include:     &include,
+		}, nil)
+
+		require.IsType(t, &objects.ObjectsClassGetOK{}, res)
+		assert.True(t, m.getObjectAdditionalCaptured.Vector)
+		assert.True(t, m.getObjectAdditionalCaptured.IncludeAllTargetVectors)
+		assert.Empty(t, m.getObjectAdditionalCaptured.Vectors)
+	})
+}
+
+func TestQuery_IncludeVectorTargetSelection(t *testing.T) {
+	className := "MultiVec"
+
+	t.Run("valid target is forwarded to the query", func(t *testing.T) {
+		m := &fakeManager{
+			queryResult:                 []*models.Object{{Class: className, ID: "123"}},
+			getObjectClassFromNameClass: namedVectorClass(),
+		}
+		h := &objectHandlers{manager: m, metricRequestsTotal: &fakeMetricRequestsTotal{}}
+
+		include := "classification,vector:vecB"
+		res := h.query(objects.ObjectsListParams{
+			HTTPRequest: httptest.NewRequest("GET", "/v1/objects?class=MultiVec", nil),
+			Class:       &className,
+			Include:     &include,
+		}, nil)
+
+		require.IsType(t, &objects.ObjectsListOK{}, res)
+		require.NotNil(t, m.queryParamsCaptured)
+		assert.Equal(t, []string{"vecB"}, m.queryParamsCaptured.Additional.Vectors)
+		assert.True(t, m.queryParamsCaptured.Additional.Classification)
+		assert.False(t, m.queryParamsCaptured.Additional.Vector)
+	})
+
+	t.Run("unknown target returns a bad request and does not run the query", func(t *testing.T) {
+		m := &fakeManager{
+			getObjectClassFromNameClass: namedVectorClass(),
+		}
+		h := &objectHandlers{manager: m, metricRequestsTotal: &fakeMetricRequestsTotal{}}
+
+		include := "vector:vecC"
+		res := h.query(objects.ObjectsListParams{
+			HTTPRequest: httptest.NewRequest("GET", "/v1/objects?class=MultiVec", nil),
+			Class:       &className,
+			Include:     &include,
+		}, nil)
+
+		require.IsType(t, &objects.ObjectsListBadRequest{}, res)
+		assert.Nil(t, m.queryParamsCaptured)
+	})
+
+	t.Run("plain include items do not load the class schema", func(t *testing.T) {
+		// Even if the schema lookup would fail, bare "vector" must keep its
+		// previous class-less behavior (no preflight class load).
+		m := &fakeManager{
+			queryResult:                 []*models.Object{{Class: className, ID: "123"}},
+			getObjectClassFromNameErr:  stderrors.New("schema lookup must not happen"),
+		}
+		h := &objectHandlers{manager: m, metricRequestsTotal: &fakeMetricRequestsTotal{}}
+
+		include := "vector"
+		res := h.query(objects.ObjectsListParams{
+			HTTPRequest: httptest.NewRequest("GET", "/v1/objects?class=MultiVec", nil),
+			Class:       &className,
+			Include:     &include,
+		}, nil)
+
+		require.IsType(t, &objects.ObjectsListOK{}, res)
+		require.NotNil(t, m.queryParamsCaptured)
+		assert.True(t, m.queryParamsCaptured.Additional.Vector)
+		assert.Empty(t, m.queryParamsCaptured.Additional.Vectors)
+	})
 }
 
 func TestExtendProperties(t *testing.T) {
@@ -1173,6 +1412,14 @@ type fakeManager struct {
 	getObjectClassFromNameErr error
 	getObjectsClassErr        error
 
+	// getObjectClassFromNameClass, when set, overrides the legacy default class
+	// returned by GetObjectClassFromName/GetObjectsClass.
+	getObjectClassFromNameClass *models.Class
+	// getObjectAdditionalCaptured records the additional properties passed to
+	// GetObject; queryParamsCaptured records the params passed to Query.
+	getObjectAdditionalCaptured additional.Properties
+	queryParamsCaptured          *uco.QueryParams
+
 	addObjectReturn    *models.Object
 	queryResult        []*models.Object
 	queryErr           *uco.Error
@@ -1206,8 +1453,9 @@ func (f *fakeManager) ValidateObject(_ context.Context, _ *models.Principal,
 }
 
 func (f *fakeManager) GetObject(_ context.Context, _ *models.Principal, class string,
-	_ strfmt.UUID, _ additional.Properties, _ *additional.ReplicationProperties, _ string,
+	_ strfmt.UUID, adds additional.Properties, _ *additional.ReplicationProperties, _ string,
 ) (*models.Object, error) {
+	f.getObjectAdditionalCaptured = adds
 	return f.getObjectReturn, f.getObjectErr
 }
 
@@ -1216,6 +1464,9 @@ func (f *fakeManager) GetObjectsClass(ctx context.Context,
 ) (*models.Class, error) {
 	if f.getObjectsClassErr != nil {
 		return nil, f.getObjectsClassErr
+	}
+	if f.getObjectClassFromNameClass != nil {
+		return f.getObjectClassFromNameClass, nil
 	}
 	class := &models.Class{
 		Class:      f.getObjectReturn.Class,
@@ -1230,6 +1481,9 @@ func (f *fakeManager) GetObjectClassFromName(ctx context.Context, principal *mod
 	if f.getObjectClassFromNameErr != nil {
 		return nil, f.getObjectClassFromNameErr
 	}
+	if f.getObjectClassFromNameClass != nil {
+		return f.getObjectClassFromNameClass, nil
+	}
 	class := &models.Class{
 		Class:      f.getObjectReturn.Class,
 		Vectorizer: "text2vec-contextionary",
@@ -1242,8 +1496,9 @@ func (f *fakeManager) GetObjects(ctx context.Context, principal *models.Principa
 }
 
 func (f *fakeManager) Query(_ context.Context,
-	_ *models.Principal, _ *uco.QueryParams,
+	_ *models.Principal, params *uco.QueryParams,
 ) ([]*models.Object, *uco.Error) {
+	f.queryParamsCaptured = params
 	return f.queryResult, f.queryErr
 }
 

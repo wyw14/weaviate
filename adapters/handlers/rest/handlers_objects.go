@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	middleware "github.com/go-openapi/runtime/middleware"
@@ -290,7 +291,29 @@ func (h *objectHandlers) query(params objects.ObjectsListParams,
 	principal *models.Principal,
 ) middleware.Responder {
 	ctx := restCtx.AddPrincipalToContext(params.HTTPRequest.Context(), principal)
-	additional, err := parseIncludeParam(params.Include, h.modulesProvider, h.shouldIncludeGetObjectsModuleParams(), nil)
+
+	// A "vector:<target-name>" selection must be validated against the
+	// collection's vector config, so the class is only loaded when the include
+	// list actually carries such a token. Plain include items (e.g.
+	// "vector", "classification") keep their previous class-less handling.
+	var (
+		class *models.Class
+		err   error
+	)
+	if params.Include != nil && includeHasTargetVectorSelection(params.Include) {
+		class, err = h.manager.GetObjectClassFromName(ctx, principal, *params.Class)
+		if err != nil {
+			h.metricRequestsTotal.logError(*params.Class, err)
+			if errors.As(err, &authzerrors.Forbidden{}) {
+				return objects.NewObjectsListForbidden().
+					WithPayload(errPayloadFromSingleErr(principal, err))
+			}
+			return objects.NewObjectsListBadRequest().
+				WithPayload(errPayloadFromSingleErr(principal, err))
+		}
+	}
+
+	additional, err := parseIncludeParam(params.Include, h.modulesProvider, h.shouldIncludeGetObjectsModuleParams(), class)
 	if err != nil {
 		h.metricRequestsTotal.logError(*params.Class, err)
 		return objects.NewObjectsListBadRequest().
@@ -930,6 +953,21 @@ func (e *objectsRequestsTotal) logError(className string, err error) {
 	}
 }
 
+// includeHasTargetVectorSelection reports whether the comma-separated include
+// list contains at least one "vector:<target-name>" token. It lets handlers
+// decide whether the collection schema has to be loaded for validation.
+func includeHasTargetVectorSelection(in *string) bool {
+	if in == nil {
+		return false
+	}
+	for _, part := range strings.Split(*in, ",") {
+		if strings.HasPrefix(part, "vector:") {
+			return true
+		}
+	}
+	return false
+}
+
 func parseIncludeParam(in *string, modulesProvider ModulesProvider, includeModuleParams bool,
 	class *models.Class,
 ) (additional.Properties, error) {
@@ -940,6 +978,12 @@ func parseIncludeParam(in *string, modulesProvider ModulesProvider, includeModul
 
 	parts := strings.Split(*in, ",")
 
+	// fullVector tracks a bare "vector" token (all vectors, including every
+	// target vector); targetVectors collects "vector:<name>" tokens.
+	var (
+		fullVector    bool
+		targetVectors []string
+	)
 	for _, prop := range parts {
 		if prop == "classification" {
 			out.Classification = true
@@ -947,12 +991,28 @@ func parseIncludeParam(in *string, modulesProvider ModulesProvider, includeModul
 			continue
 		}
 		if prop == "vector" {
-			out.Vector = true
-			// Named vectors too: the remote-shard result marshaling
-			// (storobj.MarshalBinaryOptional) strips target vectors unless this is
-			// set, so without it a cluster LIST returns nil Vectors for objects on
-			// remote shards while a single-node LIST returns them.
-			out.IncludeAllTargetVectors = true
+			fullVector = true
+			continue
+		}
+		if strings.HasPrefix(prop, "vector:") {
+			targetVector := strings.TrimPrefix(prop, "vector:")
+			if targetVector == "" {
+				return out, newErrUnregonizedProperty(fmt.Errorf(
+					"invalid ?include item '%s': target vector name must not be empty, use 'vector:<target-name>'", prop))
+			}
+			if class == nil {
+				return out, newErrUnregonizedProperty(fmt.Errorf(
+					"?include=vector:%s requires the collection to be specified with the 'class' query parameter",
+					targetVector))
+			}
+			if _, ok := class.VectorConfig[targetVector]; !ok {
+				return out, newErrUnregonizedProperty(fmt.Errorf(
+					"target vector '%s' is not configured in the vector config of class '%s'",
+					targetVector, class.Class))
+			}
+			if !slices.Contains(targetVectors, targetVector) {
+				targetVectors = append(targetVectors, targetVector)
+			}
 			continue
 		}
 		if includeModuleParams && modulesProvider != nil {
@@ -966,6 +1026,22 @@ func parseIncludeParam(in *string, modulesProvider ModulesProvider, includeModul
 			}
 		}
 		return out, newErrUnregonizedProperty(fmt.Errorf("unrecognized property '%s' in ?include list", prop))
+	}
+
+	if fullVector {
+		// Bare "vector" requests every vector, both the legacy (unnamed) vector
+		// and all target vectors:
+		//  - IncludeAllTargetVectors prevents the remote-shard result marshaling
+		//    (storobj.MarshalBinaryOptional) from stripping named vectors, so a
+		//    cluster LIST/GET returns them for objects on remote shards too.
+		//  - It takes precedence over any specific "vector:<name>" selections,
+		//    which therefore must not be forwarded as a filter (otherwise
+		//    remote-shard marshaling would trim the payload down to them).
+		out.Vector = true
+		out.IncludeAllTargetVectors = true
+		out.Vectors = nil
+	} else {
+		out.Vectors = targetVectors
 	}
 
 	return out, nil

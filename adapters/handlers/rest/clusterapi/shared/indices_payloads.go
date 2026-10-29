@@ -323,6 +323,23 @@ func (p singleObjectPayload) Marshal(in *storobj.Object, method string) ([]byte,
 	}
 }
 
+// MarshalWithAdditional is Marshal for GET requests that only serializes the
+// vectors/properties selected by addProps, avoiding sending data the caller
+// did not request (e.g. "?include=vector:<target-name>"). Only supported with
+// MethodGet.
+func (p singleObjectPayload) MarshalWithAdditional(in *storobj.Object, method string,
+	addProps additional.Properties,
+) ([]byte, error) {
+	switch method {
+	case MethodGet:
+		// GET requests don't double send vectors via models.Object, no
+		// conversion is necessary.
+		return in.MarshalBinaryOptional(addProps)
+	default:
+		return nil, fmt.Errorf("unsupported operation type: %s", method)
+	}
+}
+
 func (p singleObjectPayload) Unmarshal(in []byte, method string) (*storobj.Object, error) {
 	switch method {
 	case MethodPut:

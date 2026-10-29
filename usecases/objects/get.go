@@ -53,7 +53,7 @@ func (m *Manager) GetObject(ctx context.Context, principal *models.Principal,
 		m.trackUsageSingle(res)
 	}
 
-	obj := res.ObjectWithVector(additional.Vector)
+	obj := res.ObjectWithVectorSelection(additional.Vector, additional.Vectors)
 	return obj, nil
 }
 
@@ -188,7 +188,7 @@ func (m *Manager) getObjectsFromRepo(ctx context.Context,
 		m.trackUsageList(res)
 	}
 
-	return res.ObjectsWithVector(additional.Vector), nil
+	return res.ObjectsWithVectorSelection(additional.Vector, additional.Vectors), nil
 }
 
 func (m *Manager) getSort(sort, order *string) []filters.Sort {

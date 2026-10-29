@@ -565,7 +565,18 @@ func (i *indices) getObject() http.Handler {
 			return
 		}
 
-		objBytes, err := shared.IndicesPayloads.SingleObject.Marshal(obj, shared.MethodGet)
+		// additional arrives over JSON, which drops IncludeAllTargetVectors
+		// (json:"-"), so a requester that asked for "include=vector"
+		// (Vector=true, no specific target names) would get named vectors
+		// stripped by MarshalBinaryOptional. Reconstruct the intent here; this
+		// also keeps mixed-version clusters correct (older coordinators never
+		// send the flag).
+		if additional.Vector && !additional.IncludeAllTargetVectors && len(additional.Vectors) == 0 {
+			additional.IncludeAllTargetVectors = true
+		}
+
+		objBytes, err := shared.IndicesPayloads.SingleObject.MarshalWithAdditional(
+			obj, shared.MethodGet, additional)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
