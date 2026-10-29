@@ -247,6 +247,224 @@ func TestBatchDeleteObjects_MatchesCappedAtLimit(t *testing.T) {
 	}
 }
 
+// TestBatchDeleteObjects_MaxMatchesGate drives the safety threshold against a real
+// shard: equality runs the whole resolved set, anything above rejects before a delete
+// is sent, an explicit zero only admits a zero match, a dry run applies the same gate,
+// and the count is the sum over every shard for the one set the call resolved.
+func TestBatchDeleteObjects_MaxMatchesGate(t *testing.T) {
+	ctx := context.Background()
+	const objectCount = 5
+
+	// remainingMatchCount dry-runs without the threshold and reports what still
+	// matches the filter. A gated rejection is only worth anything if the objects
+	// it was about to delete are all still there.
+	remainingMatchCount := func(t *testing.T, repo *DB, tenant string) int64 {
+		t.Helper()
+		res, err := repo.BatchDeleteObjects(ctx, batchDeleteMatchAllParams(true), time.Now(), nil, tenant, 0)
+		require.NoError(t, err)
+		return res.Matches
+	}
+
+	t.Run("no match with an explicit zero threshold runs and deletes nothing", func(t *testing.T) {
+		repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), singleShardState(), batchDeleteLimit)
+		res, err := repo.BatchDeleteObjects(ctx,
+			batchDeleteParamsWithMaxMatches(batchDeleteNoMatchParams(true).Filters.Root, false, 0),
+			time.Now(), nil, "", 0)
+		require.NoError(t, err)
+		require.Equal(t, int64(0), res.Matches)
+		require.Empty(t, res.Objects)
+	})
+
+	t.Run("a count at or below the threshold deletes every resolved object", func(t *testing.T) {
+		for _, threshold := range []int64{int64(objectCount), batchDeleteLimit} {
+			t.Run(fmt.Sprintf("threshold %d", threshold), func(t *testing.T) {
+				repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), singleShardState(), batchDeleteLimit)
+				simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, "", objectCount)
+
+				res, err := repo.BatchDeleteObjects(ctx,
+					batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), false, threshold),
+					time.Now(), nil, "", 0)
+				require.NoError(t, err)
+				require.Equal(t, int64(objectCount), res.Matches,
+					"the reply count is the exact resolved size while it is at or below the limit")
+				require.Len(t, res.Objects, objectCount, "the whole resolved set is deleted, not a prefix")
+				require.Zero(t, remainingMatchCount(t, repo, ""))
+			})
+		}
+	})
+
+	t.Run("a count over the threshold rejects before any delete", func(t *testing.T) {
+		repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), singleShardState(), batchDeleteLimit)
+		simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, "", objectCount)
+
+		_, err := repo.BatchDeleteObjects(ctx,
+			batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), false, objectCount-1),
+			time.Now(), nil, "", 0)
+		var exceeded objects.ErrBatchDeleteMaxMatchesExceeded
+		require.ErrorAs(t, err, &exceeded)
+		require.Equal(t, int64(objectCount-1), exceeded.MaxMatches)
+		require.Equal(t, int64(objectCount), exceeded.Matches)
+		require.False(t, exceeded.AtLeast, "every shard stayed under its resolve window, so the count is exact")
+		require.False(t, exceeded.DryRun)
+		require.Equal(t, int64(objectCount), remainingMatchCount(t, repo, ""),
+			"nothing was deleted")
+	})
+
+	t.Run("an explicit zero rejects a non-zero match and deletes nothing", func(t *testing.T) {
+		repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), singleShardState(), batchDeleteLimit)
+		simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, "", objectCount)
+
+		_, err := repo.BatchDeleteObjects(ctx,
+			batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), false, 0),
+			time.Now(), nil, "", 0)
+		var exceeded objects.ErrBatchDeleteMaxMatchesExceeded
+		require.ErrorAs(t, err, &exceeded)
+		require.Zero(t, exceeded.MaxMatches)
+		require.Equal(t, int64(objectCount), exceeded.Matches)
+		require.False(t, exceeded.AtLeast)
+		require.Equal(t, int64(objectCount), remainingMatchCount(t, repo, ""))
+	})
+
+	t.Run("a dry run over the threshold is rejected just like a real delete", func(t *testing.T) {
+		repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), singleShardState(), batchDeleteLimit)
+		simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, "", objectCount)
+
+		_, err := repo.BatchDeleteObjects(ctx,
+			batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), true, objectCount-1),
+			time.Now(), nil, "", 0)
+		var exceeded objects.ErrBatchDeleteMaxMatchesExceeded
+		require.ErrorAs(t, err, &exceeded)
+		require.True(t, exceeded.DryRun)
+		require.Equal(t, int64(objectCount), remainingMatchCount(t, repo, ""))
+	})
+
+	t.Run("a dry run at the threshold reports the set and deletes nothing", func(t *testing.T) {
+		repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), singleShardState(), batchDeleteLimit)
+		simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, "", objectCount)
+
+		res, err := repo.BatchDeleteObjects(ctx,
+			batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), true, objectCount),
+			time.Now(), nil, "", 0)
+		require.NoError(t, err)
+		require.Equal(t, int64(objectCount), res.Matches)
+		require.Len(t, res.Objects, objectCount)
+		require.Equal(t, int64(objectCount), remainingMatchCount(t, repo, ""),
+			"a dry run still deletes nothing")
+	})
+
+	t.Run("a resolve stopped at the global cap reports a lower bound and deletes nothing", func(t *testing.T) {
+		const overLimit = 50
+		repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), singleShardState(), batchDeleteLimit)
+		simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, "", overLimit)
+
+		_, err := repo.BatchDeleteObjects(ctx,
+			batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), false, batchDeleteLimit),
+			time.Now(), nil, "", 0)
+		var exceeded objects.ErrBatchDeleteMaxMatchesExceeded
+		require.ErrorAs(t, err, &exceeded)
+		require.Equal(t, batchDeleteLimit, exceeded.MaxMatches)
+		require.Equal(t, batchDeleteLimit+1, exceeded.Matches, "the reply carries the raw per-shard window")
+		require.True(t, exceeded.AtLeast, "the shard filled its window, so the total is at least this")
+
+		// A gated call must never have removed a prefix: draining without the gate
+		// afterwards still accounts for every object.
+		require.Equal(t, overLimit, drainBatchDelete(t, repo, batchDeleteMatchAllParams(false), ""))
+	})
+
+	t.Run("the threshold counts the multi-shard total, not one shard", func(t *testing.T) {
+		const total = 9
+
+		t.Run("a total equal to the threshold deletes across every shard", func(t *testing.T) {
+			repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), multiShardState(), batchDeleteLimit)
+			simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, "", total)
+
+			res, err := repo.BatchDeleteObjects(ctx,
+				batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), false, total),
+				time.Now(), nil, "", 0)
+			require.NoError(t, err)
+			require.Equal(t, int64(total), res.Matches)
+			require.Len(t, res.Objects, total)
+			require.Zero(t, remainingMatchCount(t, repo, ""))
+		})
+
+		t.Run("a total over the threshold rejects with the exact sum", func(t *testing.T) {
+			repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), multiShardState(), batchDeleteLimit)
+			simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, "", total)
+
+			_, err := repo.BatchDeleteObjects(ctx,
+				batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), false, total-1),
+				time.Now(), nil, "", 0)
+			var exceeded objects.ErrBatchDeleteMaxMatchesExceeded
+			require.ErrorAs(t, err, &exceeded)
+			require.Equal(t, int64(total), exceeded.Matches,
+				"every shard stayed under its resolve window, so the summed count is exact")
+			require.False(t, exceeded.AtLeast)
+			require.Equal(t, total, drainBatchDelete(t, repo, batchDeleteMatchAllParams(false), ""),
+				"the rejection deleted no prefix")
+		})
+	})
+
+	t.Run("an uncapped global limit still gates on the exact total and deletes nothing by existing rule", func(t *testing.T) {
+		repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), singleShardState(), 0)
+		simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, "", objectCount)
+
+		res, err := repo.BatchDeleteObjects(ctx,
+			batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), false, objectCount),
+			time.Now(), nil, "", 0)
+		require.NoError(t, err)
+		require.Equal(t, int64(objectCount), res.Matches, "a limit of zero resolves every match")
+		require.Empty(t, res.Objects, "the no-cap rule deletes nothing, with or without the threshold")
+		require.Equal(t, int64(objectCount), remainingMatchCount(t, repo, ""))
+
+		_, err = repo.BatchDeleteObjects(ctx,
+			batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), false, objectCount-1),
+			time.Now(), nil, "", 0)
+		var exceeded objects.ErrBatchDeleteMaxMatchesExceeded
+		require.ErrorAs(t, err, &exceeded)
+		require.Equal(t, int64(objectCount), exceeded.Matches)
+		require.False(t, exceeded.AtLeast)
+	})
+
+	t.Run("the count is scoped to the request's collection and tenant", func(t *testing.T) {
+		const otherTenant = "other-tenant"
+		repo := newBatchDeleteRepo(t, batchDeleteTestClass(true),
+			batchDeleteTenantShardState(batchDeleteTenant, otherTenant), batchDeleteLimit)
+		simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, batchDeleteTenant, objectCount)
+		simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, otherTenant, objectCount)
+
+		res, err := repo.BatchDeleteObjects(ctx,
+			batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), false, objectCount),
+			time.Now(), nil, batchDeleteTenant, 0)
+		require.NoError(t, err)
+		require.Len(t, res.Objects, objectCount, "only the addressed tenant's matches are counted and deleted")
+		require.Zero(t, remainingMatchCount(t, repo, batchDeleteTenant))
+		require.Equal(t, int64(objectCount), remainingMatchCount(t, repo, otherTenant),
+			"the other tenant's objects are untouched")
+	})
+}
+
+// TestBatchDeleteObjects_MaxMatchesAboveLimitRejected pins the combination guard at
+// the repo seam: with a positive limit below the threshold the resolve could be
+// truncated, so the call fails before resolving rather than comparing against a
+// truncated count and deleting a prefix.
+func TestBatchDeleteObjects_MaxMatchesAboveLimitRejected(t *testing.T) {
+	ctx := context.Background()
+	repo := newBatchDeleteRepo(t, batchDeleteTestClass(false), singleShardState(), batchDeleteLimit)
+	simpleInsertObjectsForTenant(t, repo, batchDeleteClassName, "", 5)
+
+	_, err := repo.BatchDeleteObjects(ctx,
+		batchDeleteParamsWithMaxMatches(batchDeleteMatchAllClause(), false, batchDeleteLimit+1),
+		time.Now(), nil, "", 0)
+	var invalid objects.ErrInvalidUserInput
+	require.ErrorAs(t, err, &invalid)
+	require.ErrorContains(t, err, "QUERY_MAXIMUM_RESULTS")
+
+	params := batchDeleteMatchAllParams(true)
+	res, err := repo.BatchDeleteObjects(ctx, params, time.Now(), nil, "", 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(5), res.Matches, "the rejected combination resolved and deleted nothing")
+}
+
 // TestBatchDeleteObjects_ResolvesPastDeadDocIDs pins that a dead doc id (its object
 // gone) never consumes a resolve slot, including after a restart resurrects it in the
 // doc id universe a deny-list filter starts from.
@@ -478,6 +696,20 @@ func batchDeleteParams(root *filters.Clause, dryRun bool) objects.BatchDeletePar
 		DryRun:    dryRun,
 		Output:    "verbose",
 	}
+}
+
+// batchDeleteMaxMatchesPtr returns n as a pointer, so a test can distinguish an
+// explicit threshold (including 0) from the threshold being disabled (nil).
+func batchDeleteMaxMatchesPtr(n int64) *int64 {
+	return &n
+}
+
+// batchDeleteParamsWithMaxMatches is batchDeleteParams with the safety threshold
+// switched on at n.
+func batchDeleteParamsWithMaxMatches(root *filters.Clause, dryRun bool, n int64) objects.BatchDeleteParams {
+	params := batchDeleteParams(root, dryRun)
+	params.MaxMatches = batchDeleteMaxMatchesPtr(n)
+	return params
 }
 
 func newBatchDeleteRepo(t *testing.T, class *models.Class, shardState *sharding.State,

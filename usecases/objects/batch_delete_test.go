@@ -183,7 +183,7 @@ func Test_BatchDelete_RequestValidation(t *testing.T) {
 		}
 
 		for _, test := range tests {
-			_, err := manager.DeleteObjects(ctx, nil, test.input.Match, test.input.DeletionTimeUnixMilli, test.input.DryRun, test.input.Output, nil, "")
+			_, err := manager.DeleteObjects(ctx, nil, test.input.Match, test.input.DeletionTimeUnixMilli, test.input.DryRun, test.input.Output, test.input.MaxMatches, nil, "")
 			assert.Equal(t, test.expectedError, err.Error())
 		}
 	})
@@ -193,7 +193,7 @@ func Test_BatchDelete_RequestValidation(t *testing.T) {
 			Class: "SomeMissingClass",
 			Where: &models.WhereFilter{Path: []string{"name"}, Operator: "Equal", ValueText: ptString("value")},
 		}
-		_, err := manager.DeleteObjects(ctx, nil, match, nil, nil, nil, nil, "")
+		_, err := manager.DeleteObjects(ctx, nil, match, nil, nil, nil, nil, nil, "")
 		require.Error(t, err)
 		var invalid ErrInvalidUserInput
 		require.True(t, errors.As(err, &invalid), "expected ErrInvalidUserInput, got %T: %v", err, err)
@@ -210,7 +210,7 @@ func Test_BatchDelete_RequestValidation(t *testing.T) {
 		}
 		for _, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
-				_, err := manager.DeleteObjects(ctx, nil, test.match, nil, nil, ptString(verbosity.OutputVerbose), nil, "")
+				_, err := manager.DeleteObjects(ctx, nil, test.match, nil, nil, ptString(verbosity.OutputVerbose), nil, nil, "")
 				require.Error(t, err)
 				var invalid ErrInvalidUserInput
 				require.True(t, errors.As(err, &invalid), "expected ErrInvalidUserInput, got %T: %v", err, err)
@@ -284,7 +284,7 @@ func Test_BatchDelete_NamespaceResolution(t *testing.T) {
 		})).Return(BatchDeleteResult{DeletionTime: time.Time{}}, nil)
 
 		principal := &models.Principal{Username: "u", Namespace: "customer1"}
-		_, err := manager.DeleteObjects(context.Background(), principal, newMatch(), nil, ptBool(false), ptString(verbosity.OutputMinimal), nil, "")
+		_, err := manager.DeleteObjects(context.Background(), principal, newMatch(), nil, ptBool(false), ptString(verbosity.OutputMinimal), nil, nil, "")
 		require.NoError(t, err)
 
 		// Authz was invoked against the qualified resource.
@@ -301,7 +301,7 @@ func Test_BatchDelete_NamespaceResolution(t *testing.T) {
 		manager, _, _ := makeManager(t, []*models.Class{fooClass("customer2:Foo")})
 
 		principal := &models.Principal{Username: "u", Namespace: "customer1"}
-		_, err := manager.DeleteObjects(context.Background(), principal, newMatch(), nil, ptBool(false), ptString(verbosity.OutputMinimal), nil, "")
+		_, err := manager.DeleteObjects(context.Background(), principal, newMatch(), nil, ptBool(false), ptString(verbosity.OutputMinimal), nil, nil, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "customer1:Foo")
 	})
@@ -315,7 +315,7 @@ func Test_BatchDelete_NamespaceResolution(t *testing.T) {
 		})).Return(BatchDeleteResult{DeletionTime: time.Time{}}, nil)
 
 		principal := &models.Principal{Username: "admin"}
-		_, err := manager.DeleteObjects(context.Background(), principal, newMatch(), nil, ptBool(false), ptString(verbosity.OutputMinimal), nil, "")
+		_, err := manager.DeleteObjects(context.Background(), principal, newMatch(), nil, ptBool(false), ptString(verbosity.OutputMinimal), nil, nil, "")
 		require.NoError(t, err)
 		require.NotEmpty(t, authorizer.Calls())
 		require.Contains(t, authorizer.Calls()[0].Resources[0], "Foo")
@@ -365,7 +365,7 @@ func Test_BatchDelete_ValidationErrorsAreUserInput(t *testing.T) {
 			Where: &models.WhereFilter{Path: []string{"doesNotExist"}, Operator: "Equal", ValueText: ptString("v")},
 		}
 		_, err := mgr.DeleteObjects(context.Background(), &models.Principal{Username: "admin"},
-			match, nil, ptBool(true), ptString(verbosity.OutputMinimal), nil, "")
+			match, nil, ptBool(true), ptString(verbosity.OutputMinimal), nil, nil, "")
 		require.Error(t, err)
 		assert.True(t, errors.As(err, &ErrInvalidUserInput{}),
 			"unknown-property filter must be ErrInvalidUserInput, got %T: %v", err, err)
@@ -378,7 +378,7 @@ func Test_BatchDelete_ValidationErrorsAreUserInput(t *testing.T) {
 			Where: &models.WhereFilter{Path: []string{"ref", "customer2:Other", "name"}, Operator: "Equal", ValueText: ptString("v")},
 		}
 		_, err := mgr.DeleteObjects(context.Background(), &models.Principal{Username: "u", Namespace: "customer1"},
-			match, nil, ptBool(true), ptString(verbosity.OutputMinimal), nil, "")
+			match, nil, ptBool(true), ptString(verbosity.OutputMinimal), nil, nil, "")
 		require.Error(t, err)
 		assert.True(t, errors.As(err, &ErrInvalidUserInput{}),
 			"foreign-NS inner class must be ErrInvalidUserInput, got %T: %v", err, err)
@@ -446,7 +446,7 @@ func Test_BatchDelete_ValidationKeepsDenials(t *testing.T) {
 				Where: &models.WhereFilter{Path: []string{"name"}, Operator: "Equal", ValueText: ptString("v")},
 			}
 			_, err := manager.DeleteObjects(context.Background(), principal, match, nil, ptBool(true),
-				ptString(verbosity.OutputMinimal), nil, "")
+				ptString(verbosity.OutputMinimal), nil, nil, "")
 			require.ErrorContains(t, err, tc.wantMsg)
 			require.Equal(t, tc.wantForbidden, errors.As(err, &authzerrs.Forbidden{}))
 			require.Equal(t, !tc.wantForbidden, errors.As(err, &ErrInvalidUserInput{}))

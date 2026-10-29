@@ -22,6 +22,7 @@ import (
 	"github.com/go-openapi/errors"
 	"github.com/go-openapi/strfmt"
 	"github.com/go-openapi/swag"
+	"github.com/go-openapi/validate"
 )
 
 // BatchDelete batch delete
@@ -38,6 +39,10 @@ type BatchDelete struct {
 	// match
 	Match *BatchDeleteMatch `json:"match,omitempty"`
 
+	// Optional non-negative safety threshold on how many objects this request is allowed to match. When set, the server resolves the matching objects once for this collection and tenant: if the resolved match count is at or below the threshold the resolved plan runs as usual; if more objects match, the request is rejected before any deletion is sent, and the error reports both the threshold and that the match count exceeds it. The call never deletes only the first maxMatches objects. A value of 0 permits a zero match only; omit the field to disable the protection. The count sums every shard of the collection for the objects resolved by this one request; it is not a snapshot across requests or transactions and does not cover writes arriving during or after the resolve. A dry run applies the same threshold judgment but still deletes nothing. When QUERY_MAXIMUM_RESULTS is a positive value smaller than maxMatches, the request is rejected before resolving, because a count truncated at that limit cannot prove the threshold was met.
+	// Minimum: 0
+	MaxMatches *int64 `json:"maxMatches,omitempty"`
+
 	// Controls the verbosity of the output, possible values are: `minimal`, `verbose`. Defaults to `minimal`.
 	Output *string `json:"output,omitempty"`
 }
@@ -47,6 +52,10 @@ func (m *BatchDelete) Validate(formats strfmt.Registry) error {
 	var res []error
 
 	if err := m.validateMatch(formats); err != nil {
+		res = append(res, err)
+	}
+
+	if err := m.validateMaxMatches(formats); err != nil {
 		res = append(res, err)
 	}
 
@@ -70,6 +79,18 @@ func (m *BatchDelete) validateMatch(formats strfmt.Registry) error {
 			}
 			return err
 		}
+	}
+
+	return nil
+}
+
+func (m *BatchDelete) validateMaxMatches(formats strfmt.Registry) error {
+	if swag.IsZero(m.MaxMatches) { // not required
+		return nil
+	}
+
+	if err := validate.MinimumInt("maxMatches", "body", *m.MaxMatches, 0, false); err != nil {
+		return err
 	}
 
 	return nil

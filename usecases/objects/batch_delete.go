@@ -31,7 +31,7 @@ import (
 // DeleteObjects deletes objects in batch based on the match filter
 func (b *BatchManager) DeleteObjects(ctx context.Context, principal *models.Principal,
 	match *models.BatchDeleteMatch, deletionTimeUnixMilli *int64, dryRun *bool, output *string,
-	repl *additional.ReplicationProperties, tenant string,
+	maxMatches *int64, repl *additional.ReplicationProperties, tenant string,
 ) (*BatchDeleteResponse, error) {
 	class := "*"
 	if match != nil {
@@ -53,7 +53,7 @@ func (b *BatchManager) DeleteObjects(ctx context.Context, principal *models.Prin
 	b.metrics.BatchDeleteInc()
 	defer b.metrics.BatchDeleteDec()
 
-	return b.deleteObjects(ctx, principal, match, deletionTimeUnixMilli, dryRun, output, repl, tenant)
+	return b.deleteObjects(ctx, principal, match, deletionTimeUnixMilli, dryRun, output, maxMatches, repl, tenant)
 }
 
 // DeleteObjectsFromGRPCAfterAuth deletes objects in batch based on the match filter
@@ -78,9 +78,9 @@ func (b *BatchManager) DeleteObjectsFromGRPCAfterAuth(ctx context.Context, princ
 
 func (b *BatchManager) deleteObjects(ctx context.Context, principal *models.Principal,
 	match *models.BatchDeleteMatch, deletionTimeUnixMilli *int64, dryRun *bool, output *string,
-	repl *additional.ReplicationProperties, tenant string,
+	maxMatches *int64, repl *additional.ReplicationProperties, tenant string,
 ) (*BatchDeleteResponse, error) {
-	params, schemaVersion, err := b.validateBatchDelete(ctx, principal, match, dryRun, output)
+	params, schemaVersion, err := b.validateBatchDelete(ctx, principal, match, dryRun, output, maxMatches)
 	if err != nil {
 		return nil, errors.Wrap(err, "validate")
 	}
@@ -129,8 +129,30 @@ func (b *BatchManager) toResponse(match *models.BatchDeleteMatch, output string,
 }
 
 func (b *BatchManager) validateBatchDelete(ctx context.Context, principal *models.Principal,
-	match *models.BatchDeleteMatch, dryRun *bool, output *string,
+	match *models.BatchDeleteMatch, dryRun *bool, output *string, maxMatches *int64,
 ) (*BatchDeleteParams, uint64, error) {
+	// The safety threshold is optional, but when present it must be a non-negative
+	// integer. A negative value never reaches the repo: the repo cannot tell a
+	// malformed request from an enabled threshold.
+	if maxMatches != nil && *maxMatches < 0 {
+		return nil, 0, NewErrInvalidUserInput(
+			"maxMatches must be a non-negative integer, got %d", *maxMatches)
+	}
+
+	// With the threshold enabled, a positive QUERY_MAXIMUM_RESULTS smaller than it
+	// cannot serve the gate: resolving stops one above that cap, so a reply could
+	// report a count below maxMatches while many more objects match, and the call
+	// would delete only a prefix. Reject the combination before resolving anything.
+	// A cap of zero or below means uncapped (exact) resolution, so the gate is
+	// sound and this check does not apply.
+	if maxMatches != nil {
+		if queryMaximumResults := b.config.Config.QueryMaximumResults; queryMaximumResults > 0 && queryMaximumResults < *maxMatches {
+			return nil, 0, NewErrInvalidUserInput(
+				"maxMatches (%d) cannot exceed the positive QUERY_MAXIMUM_RESULTS limit (%d): the matched count could be truncated below the threshold",
+				*maxMatches, queryMaximumResults)
+		}
+	}
+
 	// Missing required match fields are caller input, so classify them as
 	// ErrInvalidUserInput (→ 422). Otherwise the REST handler maps these to a
 	// 500. The message wording is preserved for callers/tests.
@@ -190,10 +212,11 @@ func (b *BatchManager) validateBatchDelete(ctx context.Context, principal *model
 	}
 
 	params := &BatchDeleteParams{
-		ClassName: schema.ClassName(class.Class),
-		Filters:   filter,
-		DryRun:    dryRunParam,
-		Output:    outputParam,
+		ClassName:  schema.ClassName(class.Class),
+		Filters:    filter,
+		DryRun:     dryRunParam,
+		Output:     outputParam,
+		MaxMatches: maxMatches,
 	}
 	return params, vclasses[match.Class].Version, nil
 }

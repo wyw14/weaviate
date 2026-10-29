@@ -3388,6 +3388,13 @@
           "description": "If true, the call reports what the filter matches and deletes nothing. <br/><br/>Depending on the configured verbosity, you will either receive a count of matched objects, or a list of IDs. With a positive [`QUERY_MAXIMUM_RESULTS`](https://docs.weaviate.io/deploy/configuration/env-vars#QUERY_MAXIMUM_RESULTS) the count stops one above it, and the list holds at most `QUERY_MAXIMUM_RESULTS` IDs. Repeating the dry run reports the same count; for an exact total use an aggregate count, which resolves no objects.",
           "type": "boolean",
           "default": false
+        },
+        "maxMatches": {
+          "description": "Optional non-negative safety threshold on how many objects this request is allowed to match. When set, the server resolves the matching objects once for this collection and tenant: if the resolved match count is at or below the threshold the resolved plan runs as usual; if more objects match, the request is rejected before any deletion is sent, and the error reports both the threshold and that the match count exceeds it. The call never deletes only the first maxMatches objects. A value of 0 permits a zero match only; omit the field to disable the protection. The count sums every shard of the collection for the objects resolved by this one request; it is not a snapshot across requests or transactions and does not cover writes arriving during or after the resolve. A dry run applies the same threshold judgment but still deletes nothing. When QUERY_MAXIMUM_RESULTS is a positive value smaller than maxMatches, the request is rejected before resolving, because a count truncated at that limit cannot prove the threshold was met.",
+          "type": "integer",
+          "format": "int64",
+          "minimum": 0,
+          "x-nullable": true
         }
       }
     },

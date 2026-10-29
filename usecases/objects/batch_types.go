@@ -153,6 +153,12 @@ type BatchDeleteParams struct {
 	DeletionTime time.Time
 	DryRun       bool
 	Output       string
+	// MaxMatches is the optional safety threshold on how many objects one request
+	// may match. A nil pointer disables the protection: batch delete then behaves
+	// exactly as without it. A non-nil value (including 0) makes the repo resolve
+	// the matching set once, reject the request before deleting anything when more
+	// than MaxMatches objects were resolved, and otherwise delete that same set.
+	MaxMatches *int64 `json:"maxMatches,omitempty"`
 }
 
 type BatchDeleteResult struct {

@@ -43,7 +43,7 @@ type batchObjectsManager interface {
 	AddReferences(ctx context.Context, principal *models.Principal, refs []*models.BatchReference,
 		repl *additional.ReplicationProperties) (objects.BatchReferences, error)
 	DeleteObjects(ctx context.Context, principal *models.Principal, match *models.BatchDeleteMatch,
-		deletionTimeUnixMilli *int64, dryRun *bool, output *string,
+		deletionTimeUnixMilli *int64, dryRun *bool, output *string, maxMatches *int64,
 		repl *additional.ReplicationProperties, tenant string) (*objects.BatchDeleteResponse, error)
 }
 
@@ -193,10 +193,14 @@ func (h *batchObjectHandlers) deleteObjects(params batch.BatchObjectsDeleteParam
 	tenant := getTenant(params.Tenant)
 
 	res, err := h.manager.DeleteObjects(ctx, principal,
-		params.Body.Match, params.Body.DeletionTimeUnixMilli, params.Body.DryRun, params.Body.Output, repl, tenant)
+		params.Body.Match, params.Body.DeletionTimeUnixMilli, params.Body.DryRun, params.Body.Output,
+		params.Body.MaxMatches, repl, tenant)
 	if err != nil {
 		h.metricRequestsTotal.logError("", err)
 		if errors.As(err, &objects.ErrInvalidUserInput{}) {
+			return batch.NewBatchObjectsDeleteUnprocessableEntity().
+				WithPayload(errPayloadFromSingleErr(principal, err))
+		} else if errors.As(err, &objects.ErrBatchDeleteMaxMatchesExceeded{}) {
 			return batch.NewBatchObjectsDeleteUnprocessableEntity().
 				WithPayload(errPayloadFromSingleErr(principal, err))
 		} else if errors.As(err, &objects.ErrMultiTenancy{}) || cerrors.NamespaceErrRendersUnprocessable(err) {
@@ -294,7 +298,8 @@ func (e *batchRequestsTotal) logError(className string, err error) {
 	switch {
 	case errors.As(err, &errReplication{}):
 		e.logUserError(className)
-	case errors.As(err, &autherrs.Forbidden{}), errors.As(err, &objects.ErrInvalidUserInput{}):
+	case errors.As(err, &autherrs.Forbidden{}), errors.As(err, &objects.ErrInvalidUserInput{}),
+		errors.As(err, &objects.ErrBatchDeleteMaxMatchesExceeded{}):
 		e.logUserError(className)
 	case errors.As(err, &objects.ErrMultiTenancy{}), cerrors.NamespaceErrRendersUnprocessable(err):
 		e.logUserError(className)

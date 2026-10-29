@@ -71,7 +71,7 @@ func resolverCallSites() []resolverCallSite {
 			return err
 		}},
 		{name: "DeleteObjects", call: func(_ *Manager, b *BatchManager) error {
-			_, err := b.DeleteObjects(ctx, principal, &models.BatchDeleteMatch{Class: "Zoo"}, nil, nil, nil, nil, "")
+			_, err := b.DeleteObjects(ctx, principal, &models.BatchDeleteMatch{Class: "Zoo"}, nil, nil, nil, nil, nil, "")
 			return err
 		}},
 		{name: "MergeObject", objErr: true, call: func(m *Manager, _ *BatchManager) error {

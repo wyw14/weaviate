@@ -211,6 +211,16 @@ func (db *DB) BatchDeleteObjects(ctx context.Context, params objects.BatchDelete
 
 	limit := db.config.QueryMaximumResults
 
+	// Defense in depth for the maxMatches gate: the manager rejects this
+	// combination before the call, but every caller has to honor it, since a
+	// resolve capped below the threshold could make the gate compare against a
+	// truncated count and then delete only a prefix. Check before resolving.
+	if params.MaxMatches != nil && limit > 0 && limit < *params.MaxMatches {
+		return objects.BatchDeleteResult{}, objects.NewErrInvalidUserInput(
+			"maxMatches (%d) cannot exceed the positive QUERY_MAXIMUM_RESULTS limit (%d): the matched count could be truncated below the threshold",
+			*params.MaxMatches, limit)
+	}
+
 	shardDocIDs, err := idx.findUUIDs(ctx, params.Filters, tenant, repl, perShardResolveLimit(limit))
 	if err != nil {
 		return objects.BatchDeleteResult{}, errors.Wrapf(err, "cannot find objects")
@@ -228,6 +238,32 @@ func (db *DB) BatchDeleteObjects(ctx context.Context, params objects.BatchDelete
 			"capped_shards": plan.cappedShards,
 			"dry_run":       params.DryRun,
 		}).Infof("batch delete stopped at QUERY_MAXIMUM_RESULTS (%d): more objects match than one call deletes", limit)
+	}
+
+	// The maxMatches gate runs against the set this one call just resolved, the
+	// same set toDelete names: there is no dry run followed by a second resolve.
+	// On rejection no delete is sent, so concurrent writes can only add matches
+	// the gate does not see; the promise is about this resolved set, not a
+	// cross-request or cross-transaction snapshot.
+	if params.MaxMatches != nil {
+		if gateErr := maxMatchesExceededError(plan, *params.MaxMatches, params.DryRun); gateErr != nil {
+			db.logger.WithFields(logrus.Fields{
+				"action":      "batch_delete_objects_max_matches_exceeded",
+				"class":       className,
+				"tenant":      tenant,
+				"limit":       limit,
+				"max_matches": *params.MaxMatches,
+				"matches":     plan.resolvedTotal,
+				"at_least":    plan.cappedShards > 0,
+				"dry_run":     params.DryRun,
+			}).Info("batch delete rejected before deleting anything: more objects matched than maxMatches allows")
+			return objects.BatchDeleteResult{
+				Matches:      matches,
+				Limit:        limit,
+				DeletionTime: deletionTime,
+				DryRun:       params.DryRun,
+			}, gateErr
+		}
 	}
 
 	db.logger.WithFields(logrus.Fields{
@@ -287,6 +323,11 @@ type shardDeletePlan struct {
 	toDelete map[string][]strfmt.UUID
 	// matches is the reply count: exact up to limit, else limit+1 (more than one call can delete).
 	matches int64
+	// resolvedTotal is the unclamped sum of UUIDs every shard resolved for this call.
+	// It equals the true total unless a shard stopped at its per-shard window
+	// (cappedShards > 0), in which case it is a lower bound. The maxMatches gate
+	// compares against this, not the reply count clamped to limit+1.
+	resolvedTotal int64
 	// cappedShards is how many shards resolved as many matches as they were asked for.
 	cappedShards int
 	// clamped is whether matches was cut down to limit+1, so more matched than this call deletes.
@@ -310,6 +351,7 @@ func planShardDeletes(shardDocIDs map[string][]strfmt.UUID, limit int64) shardDe
 			plan.toDelete[shardName] = docIDs[:takes]
 		}
 		plan.matches += resolved
+		plan.resolvedTotal += resolved
 	}
 
 	if limit > 0 && plan.matches > limit {
@@ -317,6 +359,24 @@ func planShardDeletes(shardDocIDs map[string][]strfmt.UUID, limit int64) shardDe
 		plan.clamped = true
 	}
 	return plan
+}
+
+// maxMatchesExceededError applies the maxMatches safety gate to the set one call
+// resolved. It returns nil when the resolved set is within the threshold and an
+// objects.ErrBatchDeleteMaxMatchesExceeded otherwise; the caller must return that
+// error before sending any delete. The comparison is against the resolved total,
+// so the check and the delete name the same set. A shard that filled its resolve
+// window turns the number into a lower bound ("at least").
+func maxMatchesExceededError(plan shardDeletePlan, maxMatches int64, dryRun bool) error {
+	if plan.resolvedTotal <= maxMatches {
+		return nil
+	}
+	return objects.ErrBatchDeleteMaxMatchesExceeded{
+		MaxMatches: maxMatches,
+		Matches:    plan.resolvedTotal,
+		AtLeast:    plan.cappedShards > 0,
+		DryRun:     dryRun,
+	}
 }
 
 func estimateBatchMemory(objs objects.BatchObjects) int64 {

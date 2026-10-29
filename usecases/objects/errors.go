@@ -98,6 +98,34 @@ func forbiddenOrUnprocessable(err error) *Error {
 	return &Error{err.Error(), StatusUnprocessableEntity, err}
 }
 
+// ErrBatchDeleteMaxMatchesExceeded marks a maxMatches-protected batch delete whose
+// single resolve matched more objects than the caller allowed. It is returned before
+// any delete is sent, for both real deletes and dry runs: the safety threshold is a
+// reject-or-run gate, never a prefix limit. The REST layer maps this to HTTP 422.
+type ErrBatchDeleteMaxMatchesExceeded struct {
+	// MaxMatches is the threshold the caller set.
+	MaxMatches int64
+	// Matches is the size of the set this request resolved. It is exact unless
+	// AtLeast is true, in which case at least Matches objects matched (a shard
+	// stopped resolving at its per-shard window).
+	Matches int64
+	// AtLeast says whether Matches is a lower bound rather than an exact total.
+	AtLeast bool
+	// DryRun records that the rejected request was itself a dry run, which deletes
+	// nothing either way but still applies the threshold.
+	DryRun bool
+}
+
+func (e ErrBatchDeleteMaxMatchesExceeded) Error() string {
+	matched := fmt.Sprintf("%d", e.Matches)
+	if e.AtLeast {
+		matched = "at least " + matched
+	}
+	return fmt.Sprintf(
+		"batch delete rejected by the maxMatches safety threshold: the filter matched %s objects in this collection and tenant, which exceeds maxMatches of %d; no objects were deleted",
+		matched, e.MaxMatches)
+}
+
 // ErrInternal indicates something went wrong during processing
 type ErrInternal struct {
 	msg string
