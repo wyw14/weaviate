@@ -3612,6 +3612,9 @@ func init() {
             "$ref": "#/parameters/CommonIncludeParameterQuery"
           },
           {
+            "$ref": "#/parameters/CommonPropertiesParameterQuery"
+          },
+          {
             "$ref": "#/parameters/CommonSortParameterQuery"
           },
           {
@@ -3821,6 +3824,9 @@ func init() {
           },
           {
             "$ref": "#/parameters/CommonIncludeParameterQuery"
+          },
+          {
+            "$ref": "#/parameters/CommonPropertiesParameterQuery"
           },
           {
             "$ref": "#/parameters/CommonConsistencyLevelParameterQuery"
@@ -12774,6 +12780,12 @@ func init() {
       "name": "output",
       "in": "query"
     },
+    "CommonPropertiesParameterQuery": {
+      "type": "string",
+      "description": "Comma-separated list of the collection's property names that should be returned, e.g. ` + "`" + `title,summary` + "`" + `. Only top-level property names are allowed; nested objects and arrays are returned as whole values. Names are case-sensitive and duplicates are ignored. When present, the collection (` + "`" + `class` + "`" + `) must be specified explicitly. An empty value (` + "`" + `properties=` + "`" + `) returns each object with an empty ` + "`" + `properties` + "`" + ` object. When omitted, all properties are returned. This projection never affects the object ` + "`" + `id` + "`" + `, ` + "`" + `tenant` + "`" + ` or any ` + "`" + `include` + "`" + ` option.",
+      "name": "properties",
+      "in": "query"
+    },
     "CommonSortParameterQuery": {
       "type": "string",
       "description": "Name(s) of the property to sort by - e.g. ` + "`" + `city` + "`" + `, or ` + "`" + `country,city` + "`" + `.",
@@ -16457,6 +16469,12 @@ func init() {
           },
           {
             "type": "string",
+            "description": "Comma-separated list of the collection's property names that should be returned, e.g. ` + "`" + `title,summary` + "`" + `. Only top-level property names are allowed; nested objects and arrays are returned as whole values. Names are case-sensitive and duplicates are ignored. When present, the collection (` + "`" + `class` + "`" + `) must be specified explicitly. An empty value (` + "`" + `properties=` + "`" + `) returns each object with an empty ` + "`" + `properties` + "`" + ` object. When omitted, all properties are returned. This projection never affects the object ` + "`" + `id` + "`" + `, ` + "`" + `tenant` + "`" + ` or any ` + "`" + `include` + "`" + ` option.",
+            "name": "properties",
+            "in": "query"
+          },
+          {
+            "type": "string",
             "description": "Name(s) of the property to sort by - e.g. ` + "`" + `city` + "`" + `, or ` + "`" + `country,city` + "`" + `.",
             "name": "sort",
             "in": "query"
@@ -16682,6 +16700,12 @@ func init() {
             "type": "string",
             "description": "Include additional information, such as classification information. Allowed values include: ` + "`" + `classification` + "`" + `, ` + "`" + `vector` + "`" + ` and ` + "`" + `interpretation` + "`" + `.",
             "name": "include",
+            "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "Comma-separated list of the collection's property names that should be returned, e.g. ` + "`" + `title,summary` + "`" + `. Only top-level property names are allowed; nested objects and arrays are returned as whole values. Names are case-sensitive and duplicates are ignored. When present, the collection (` + "`" + `class` + "`" + `) must be specified explicitly. An empty value (` + "`" + `properties=` + "`" + `) returns each object with an empty ` + "`" + `properties` + "`" + ` object. When omitted, all properties are returned. This projection never affects the object ` + "`" + `id` + "`" + `, ` + "`" + `tenant` + "`" + ` or any ` + "`" + `include` + "`" + ` option.",
+            "name": "properties",
             "in": "query"
           },
           {
@@ -26053,6 +26077,12 @@ func init() {
       "default": "minimal",
       "description": "Controls the verbosity of the output, possible values are: ` + "`" + `minimal` + "`" + `, ` + "`" + `verbose` + "`" + `. Defaults to ` + "`" + `minimal` + "`" + `.",
       "name": "output",
+      "in": "query"
+    },
+    "CommonPropertiesParameterQuery": {
+      "type": "string",
+      "description": "Comma-separated list of the collection's property names that should be returned, e.g. ` + "`" + `title,summary` + "`" + `. Only top-level property names are allowed; nested objects and arrays are returned as whole values. Names are case-sensitive and duplicates are ignored. When present, the collection (` + "`" + `class` + "`" + `) must be specified explicitly. An empty value (` + "`" + `properties=` + "`" + `) returns each object with an empty ` + "`" + `properties` + "`" + ` object. When omitted, all properties are returned. This projection never affects the object ` + "`" + `id` + "`" + `, ` + "`" + `tenant` + "`" + ` or any ` + "`" + `include` + "`" + ` option.",
+      "name": "properties",
       "in": "query"
     },
     "CommonSortParameterQuery": {

@@ -4582,6 +4582,13 @@
       "required": false,
       "type": "string"
     },
+    "CommonPropertiesParameterQuery": {
+      "description": "Comma-separated list of the collection's property names that should be returned, e.g. `title,summary`. Only top-level property names are allowed; nested objects and arrays are returned as whole values. Names are case-sensitive and duplicates are ignored. When present, the collection (`class`) must be specified explicitly. An empty value (`properties=`) returns each object with an empty `properties` object. When omitted, all properties are returned. This projection never affects the object `id`, `tenant` or any `include` option.",
+      "in": "query",
+      "name": "properties",
+      "required": false,
+      "type": "string"
+    },
     "CommonConsistencyLevelParameterQuery": {
       "description": "Determines how many replicas must acknowledge a request before it is considered successful.",
       "in": "query",
@@ -7291,6 +7298,9 @@
             "$ref": "#/parameters/CommonIncludeParameterQuery"
           },
           {
+            "$ref": "#/parameters/CommonPropertiesParameterQuery"
+          },
+          {
             "$ref": "#/parameters/CommonSortParameterQuery"
           },
           {
@@ -7775,6 +7785,9 @@
           },
           {
             "$ref": "#/parameters/CommonIncludeParameterQuery"
+          },
+          {
+            "$ref": "#/parameters/CommonPropertiesParameterQuery"
           },
           {
             "$ref": "#/parameters/CommonConsistencyLevelParameterQuery"

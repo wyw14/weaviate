@@ -104,6 +104,12 @@ type ObjectsClassGetParams struct {
 	*/
 	NodeName *string
 
+	/* Properties.
+
+	   Comma-separated list of the collection's property names that should be returned, e.g. `title,summary`. Only top-level property names are allowed; nested objects and arrays are returned as whole values. Names are case-sensitive and duplicates are ignored. When present, the collection (`class`) must be specified explicitly. An empty value (`properties=`) returns each object with an empty `properties` object. When omitted, all properties are returned. This projection never affects the object `id`, `tenant` or any `include` option.
+	*/
+	Properties *string
+
 	/* Tenant.
 
 	   Specifies the tenant in a request targeting a multi-tenant collection (class).
@@ -218,6 +224,17 @@ func (o *ObjectsClassGetParams) SetNodeName(nodeName *string) {
 	o.NodeName = nodeName
 }
 
+// WithProperties adds the properties to the objects class get params
+func (o *ObjectsClassGetParams) WithProperties(properties *string) *ObjectsClassGetParams {
+	o.SetProperties(properties)
+	return o
+}
+
+// SetProperties adds the properties to the objects class get params
+func (o *ObjectsClassGetParams) SetProperties(properties *string) {
+	o.Properties = properties
+}
+
 // WithTenant adds the tenant to the objects class get params
 func (o *ObjectsClassGetParams) WithTenant(tenant *string) *ObjectsClassGetParams {
 	o.SetTenant(tenant)
@@ -293,6 +310,23 @@ func (o *ObjectsClassGetParams) WriteToRequest(r runtime.ClientRequest, reg strf
 		if qNodeName != "" {
 
 			if err := r.SetQueryParam("node_name", qNodeName); err != nil {
+				return err
+			}
+		}
+	}
+
+	if o.Properties != nil {
+
+		// query param properties
+		var qrProperties string
+
+		if o.Properties != nil {
+			qrProperties = *o.Properties
+		}
+		qProperties := qrProperties
+		if qProperties != "" {
+
+			if err := r.SetQueryParam("properties", qProperties); err != nil {
 				return err
 			}
 		}

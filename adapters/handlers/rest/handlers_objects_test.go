@@ -1036,28 +1036,28 @@ func TestEnrichObjectsWithLinks(t *testing.T) {
 			}
 		)
 
-		res := h.query(req, nil)
+		res := h.query(req, nil, nil)
 		if _, ok := res.(*objects.ObjectsListOK); !ok {
 			t.Errorf("unexpected result %v", res)
 		}
 
 		m.queryErr = &uco.Error{Code: uco.StatusForbidden}
-		res = h.query(req, nil)
+		res = h.query(req, nil, nil)
 		if _, ok := res.(*objects.ObjectsListForbidden); !ok {
 			t.Errorf("expected: %T got: %T", objects.ObjectsListForbidden{}, res)
 		}
 		m.queryErr = &uco.Error{Code: uco.StatusNotFound}
-		res = h.query(req, nil)
+		res = h.query(req, nil, nil)
 		if _, ok := res.(*objects.ObjectsListNotFound); !ok {
 			t.Errorf("expected: %T got: %T", objects.ObjectsListNotFound{}, res)
 		}
 		m.queryErr = &uco.Error{Code: uco.StatusBadRequest}
-		res = h.query(req, nil)
+		res = h.query(req, nil, nil)
 		if _, ok := res.(*objects.ObjectsListUnprocessableEntity); !ok {
 			t.Errorf("expected: %T got: %T", objects.ObjectsListUnprocessableEntity{}, res)
 		}
 		m.queryErr = &uco.Error{Code: uco.StatusInternalServerError}
-		res = h.query(req, nil)
+		res = h.query(req, nil, nil)
 		if _, ok := res.(*objects.ObjectsListInternalServerError); !ok {
 			t.Errorf("expected: %T got: %T", objects.ObjectsListInternalServerError{}, res)
 		}
@@ -1168,10 +1168,14 @@ func TestExtendProperties(t *testing.T) {
 }
 
 type fakeManager struct {
-	getObjectReturn           *models.Object
-	getObjectErr              error
-	getObjectClassFromNameErr error
-	getObjectsClassErr        error
+	getObjectReturn              *models.Object
+	getObjectErr                 error
+	getObjectClassFromNameErr    error
+	getObjectClassFromNameReturn *models.Class
+	getObjectClassFromNameCalls  int
+	getObjectsClassErr           error
+	getObjectsClassReturn        *models.Class
+	getObjectsClassCalls         int
 
 	addObjectReturn    *models.Object
 	queryResult        []*models.Object
@@ -1185,6 +1189,10 @@ type fakeManager struct {
 	addRefErr          *uco.Error
 	putRefErr          *uco.Error
 	deleteRefErr       *uco.Error
+
+	getObjectClass      string
+	getObjectAdditional *additional.Properties
+	getObjectTenant     string
 }
 
 func (f *fakeManager) HeadObject(context.Context, *models.Principal,
@@ -1206,16 +1214,23 @@ func (f *fakeManager) ValidateObject(_ context.Context, _ *models.Principal,
 }
 
 func (f *fakeManager) GetObject(_ context.Context, _ *models.Principal, class string,
-	_ strfmt.UUID, _ additional.Properties, _ *additional.ReplicationProperties, _ string,
+	_ strfmt.UUID, adds additional.Properties, _ *additional.ReplicationProperties, tenant string,
 ) (*models.Object, error) {
+	f.getObjectClass = class
+	f.getObjectAdditional = &adds
+	f.getObjectTenant = tenant
 	return f.getObjectReturn, f.getObjectErr
 }
 
 func (f *fakeManager) GetObjectsClass(ctx context.Context,
 	principal *models.Principal, id strfmt.UUID,
 ) (*models.Class, error) {
+	f.getObjectsClassCalls++
 	if f.getObjectsClassErr != nil {
 		return nil, f.getObjectsClassErr
+	}
+	if f.getObjectsClassReturn != nil {
+		return f.getObjectsClassReturn, nil
 	}
 	class := &models.Class{
 		Class:      f.getObjectReturn.Class,
@@ -1227,8 +1242,12 @@ func (f *fakeManager) GetObjectsClass(ctx context.Context,
 func (f *fakeManager) GetObjectClassFromName(ctx context.Context, principal *models.Principal,
 	className string,
 ) (*models.Class, error) {
+	f.getObjectClassFromNameCalls++
 	if f.getObjectClassFromNameErr != nil {
 		return nil, f.getObjectClassFromNameErr
+	}
+	if f.getObjectClassFromNameReturn != nil {
+		return f.getObjectClassFromNameReturn, nil
 	}
 	class := &models.Class{
 		Class:      f.getObjectReturn.Class,

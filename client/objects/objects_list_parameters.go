@@ -113,6 +113,12 @@ type ObjectsListParams struct {
 	*/
 	Order *string
 
+	/* Properties.
+
+	   Comma-separated list of the collection's property names that should be returned, e.g. `title,summary`. Only top-level property names are allowed; nested objects and arrays are returned as whole values. Names are case-sensitive and duplicates are ignored. When present, the collection (`class`) must be specified explicitly. An empty value (`properties=`) returns each object with an empty `properties` object. When omitted, all properties are returned. This projection never affects the object `id`, `tenant` or any `include` option.
+	*/
+	Properties *string
+
 	/* Sort.
 
 	   Name(s) of the property to sort by - e.g. `city`, or `country,city`.
@@ -255,6 +261,17 @@ func (o *ObjectsListParams) SetOrder(order *string) {
 	o.Order = order
 }
 
+// WithProperties adds the properties to the objects list params
+func (o *ObjectsListParams) WithProperties(properties *string) *ObjectsListParams {
+	o.SetProperties(properties)
+	return o
+}
+
+// SetProperties adds the properties to the objects list params
+func (o *ObjectsListParams) SetProperties(properties *string) {
+	o.Properties = properties
+}
+
 // WithSort adds the sort to the objects list params
 func (o *ObjectsListParams) WithSort(sort *string) *ObjectsListParams {
 	o.SetSort(sort)
@@ -382,6 +399,23 @@ func (o *ObjectsListParams) WriteToRequest(r runtime.ClientRequest, reg strfmt.R
 		if qOrder != "" {
 
 			if err := r.SetQueryParam("order", qOrder); err != nil {
+				return err
+			}
+		}
+	}
+
+	if o.Properties != nil {
+
+		// query param properties
+		var qrProperties string
+
+		if o.Properties != nil {
+			qrProperties = *o.Properties
+		}
+		qProperties := qrProperties
+		if qProperties != "" {
+
+			if err := r.SetQueryParam("properties", qProperties); err != nil {
 				return err
 			}
 		}

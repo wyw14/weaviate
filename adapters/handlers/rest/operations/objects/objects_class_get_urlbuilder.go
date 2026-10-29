@@ -33,6 +33,7 @@ type ObjectsClassGetURL struct {
 	ConsistencyLevel *string
 	Include          *string
 	NodeName         *string
+	Properties       *string
 	Tenant           *string
 
 	_basePath string
@@ -105,6 +106,14 @@ func (o *ObjectsClassGetURL) Build() (*url.URL, error) {
 	}
 	if nodeNameQ != "" {
 		qs.Set("node_name", nodeNameQ)
+	}
+
+	var propertiesQ string
+	if o.Properties != nil {
+		propertiesQ = *o.Properties
+	}
+	if propertiesQ != "" {
+		qs.Set("properties", propertiesQ)
 	}
 
 	var tenantQ string

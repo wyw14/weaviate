@@ -65,6 +65,10 @@ type ObjectsClassGetParams struct {
 	  In: query
 	*/
 	NodeName *string
+	/*Comma-separated list of the collection's property names that should be returned, e.g. `title,summary`. Only top-level property names are allowed; nested objects and arrays are returned as whole values. Names are case-sensitive and duplicates are ignored. When present, the collection (`class`) must be specified explicitly. An empty value (`properties=`) returns each object with an empty `properties` object. When omitted, all properties are returned. This projection never affects the object `id`, `tenant` or any `include` option.
+	  In: query
+	*/
+	Properties *string
 	/*Specifies the tenant in a request targeting a multi-tenant collection (class).
 	  In: query
 	*/
@@ -104,6 +108,11 @@ func (o *ObjectsClassGetParams) BindRequest(r *http.Request, route *middleware.M
 
 	qNodeName, qhkNodeName, _ := qs.GetOK("node_name")
 	if err := o.bindNodeName(qNodeName, qhkNodeName, route.Formats); err != nil {
+		res = append(res, err)
+	}
+
+	qProperties, qhkProperties, _ := qs.GetOK("properties")
+	if err := o.bindProperties(qProperties, qhkProperties, route.Formats); err != nil {
 		res = append(res, err)
 	}
 
@@ -214,6 +223,24 @@ func (o *ObjectsClassGetParams) bindNodeName(rawData []string, hasKey bool, form
 		return nil
 	}
 	o.NodeName = &raw
+
+	return nil
+}
+
+// bindProperties binds and validates parameter Properties from query.
+func (o *ObjectsClassGetParams) bindProperties(rawData []string, hasKey bool, formats strfmt.Registry) error {
+	var raw string
+	if len(rawData) > 0 {
+		raw = rawData[len(rawData)-1]
+	}
+
+	// Required: false
+	// AllowEmptyValue: false
+
+	if raw == "" { // empty values pass all other validations
+		return nil
+	}
+	o.Properties = &raw
 
 	return nil
 }

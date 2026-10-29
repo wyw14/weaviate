@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
+	"sort"
 	"strings"
 
 	middleware "github.com/go-openapi/runtime/middleware"
@@ -157,7 +159,20 @@ func (h *objectHandlers) getObject(params objects.ObjectsClassGetParams,
 	principal *models.Principal,
 ) middleware.Responder {
 	var additional additional.Properties
+	var projectedProps []string
 	ctx := restCtx.AddPrincipalToContext(params.HTTPRequest.Context(), principal)
+
+	projection := propertyProjectionParam(params.HTTPRequest, params.Properties)
+	if projection != nil && params.ClassName == "" {
+		// The projection can only be validated against an explicitly named
+		// collection, reject the deprecated class-less call instead of doing a
+		// preflight object lookup.
+		err := newErrInvalidProperties(fmt.Errorf(
+			"the 'properties' parameter requires the collection (class) to be specified explicitly, use /objects/{className}/{id}"))
+		h.metricRequestsTotal.logError(params.ClassName, err)
+		return objects.NewObjectsClassGetBadRequest().
+			WithPayload(errPayloadFromSingleErr(principal, err))
+	}
 
 	// The process to extract additional params depends on knowing the schema
 	// which in turn requires a preflight load of the object. We can save this
@@ -165,7 +180,8 @@ func (h *objectHandlers) getObject(params objects.ObjectsClassGetParams,
 	// params. This could potentially be optimized further by checking if only
 	// non-module specific params are contained and decide then, but we do not
 	// know if this path is critical enough for this level of optimization.
-	if params.Include != nil {
+	// The same class lookup is required to validate a ?properties projection.
+	if params.Include != nil || projection != nil {
 		var class *models.Class
 		var err error
 		if params.ClassName == "" { // deprecated request without classname
@@ -183,11 +199,26 @@ func (h *objectHandlers) getObject(params objects.ObjectsClassGetParams,
 				WithPayload(errPayloadFromSingleErr(principal, err))
 		}
 
-		additional, err = parseIncludeParam(params.Include, h.modulesProvider, true, class)
-		if err != nil {
-			h.metricRequestsTotal.logError(params.ClassName, err)
-			return objects.NewObjectsClassGetBadRequest().
-				WithPayload(errPayloadFromSingleErr(principal, err))
+		if params.Include != nil {
+			additional, err = parseIncludeParam(params.Include, h.modulesProvider, true, class)
+			if err != nil {
+				h.metricRequestsTotal.logError(params.ClassName, err)
+				return objects.NewObjectsClassGetBadRequest().
+					WithPayload(errPayloadFromSingleErr(principal, err))
+			}
+		}
+		if projection != nil {
+			projectedProps, err = parsePropertyProjection(*projection)
+			if err != nil {
+				h.metricRequestsTotal.logError(params.ClassName, err)
+				return objects.NewObjectsClassGetBadRequest().
+					WithPayload(errPayloadFromSingleErr(principal, err))
+			}
+			if err = validateProjectedProperties(class, projectedProps); err != nil {
+				h.metricRequestsTotal.logError(params.ClassName, err)
+				return objects.NewObjectsClassGetBadRequest().
+					WithPayload(errPayloadFromSingleErr(principal, err))
+			}
 		}
 	}
 
@@ -222,6 +253,9 @@ func (h *objectHandlers) getObject(params objects.ObjectsClassGetParams,
 		}
 	}
 
+	if projection != nil {
+		projectObjectProperties(object, projectedProps)
+	}
 	propertiesMap, ok := object.Properties.(map[string]interface{})
 	if ok {
 		object.Properties = h.extendPropertiesWithAPILinks(propertiesMap)
@@ -236,8 +270,16 @@ func (h *objectHandlers) getObjects(params objects.ObjectsListParams,
 	principal *models.Principal,
 ) middleware.Responder {
 	ctx := restCtx.AddPrincipalToContext(params.HTTPRequest.Context(), principal)
+	projection := propertyProjectionParam(params.HTTPRequest, params.Properties)
+	if projection != nil && (params.Class == nil || *params.Class == "") {
+		err := newErrInvalidProperties(fmt.Errorf(
+			"the 'properties' parameter requires the 'class' parameter to specify the collection explicitly"))
+		h.metricRequestsTotal.logError("", err)
+		return objects.NewObjectsListBadRequest().
+			WithPayload(errPayloadFromSingleErr(principal, err))
+	}
 	if params.Class != nil && *params.Class != "" {
-		return h.query(params, principal)
+		return h.query(params, principal, projection)
 	}
 	additional, err := parseIncludeParam(params.Include, h.modulesProvider, h.shouldIncludeGetObjectsModuleParams(), nil)
 	if err != nil {
@@ -287,7 +329,7 @@ func (h *objectHandlers) getObjects(params objects.ObjectsListParams,
 }
 
 func (h *objectHandlers) query(params objects.ObjectsListParams,
-	principal *models.Principal,
+	principal *models.Principal, projection *string,
 ) middleware.Responder {
 	ctx := restCtx.AddPrincipalToContext(params.HTTPRequest.Context(), principal)
 	additional, err := parseIncludeParam(params.Include, h.modulesProvider, h.shouldIncludeGetObjectsModuleParams(), nil)
@@ -296,6 +338,32 @@ func (h *objectHandlers) query(params objects.ObjectsListParams,
 		return objects.NewObjectsListBadRequest().
 			WithPayload(errPayloadFromSingleErr(principal, err))
 	}
+
+	var projectedProps []string
+	if projection != nil {
+		class, cerr := h.manager.GetObjectClassFromName(ctx, principal, *params.Class)
+		if cerr != nil {
+			h.metricRequestsTotal.logError(*params.Class, cerr)
+			if errors.As(cerr, &authzerrors.Forbidden{}) {
+				return objects.NewObjectsListForbidden().
+					WithPayload(errPayloadFromSingleErr(principal, cerr))
+			}
+			return objects.NewObjectsListBadRequest().
+				WithPayload(errPayloadFromSingleErr(principal, cerr))
+		}
+		projectedProps, err = parsePropertyProjection(*projection)
+		if err != nil {
+			h.metricRequestsTotal.logError(*params.Class, err)
+			return objects.NewObjectsListBadRequest().
+				WithPayload(errPayloadFromSingleErr(principal, err))
+		}
+		if err = validateProjectedProperties(class, projectedProps); err != nil {
+			h.metricRequestsTotal.logError(*params.Class, err)
+			return objects.NewObjectsListBadRequest().
+				WithPayload(errPayloadFromSingleErr(principal, err))
+		}
+	}
+
 	req := uco.QueryParams{
 		Class:      *params.Class,
 		Offset:     params.Offset,
@@ -331,6 +399,9 @@ func (h *objectHandlers) query(params objects.ObjectsListParams,
 	}
 
 	for i, object := range resultSet {
+		if projection != nil {
+			projectObjectProperties(object, projectedProps)
+		}
 		propertiesMap, ok := object.Properties.(map[string]interface{})
 		if ok {
 			resultSet[i].Properties = h.extendPropertiesWithAPILinks(propertiesMap)
@@ -910,7 +981,8 @@ func (e *objectsRequestsTotal) logError(className string, err error) {
 
 	case errors.As(err, &uco.ErrMultiTenancy{}), cerrors.NamespaceErrRendersUnprocessable(err):
 		e.logUserError(className)
-	case errors.As(err, &errReplication{}), errors.As(err, &errUnregonizedProperty{}):
+	case errors.As(err, &errReplication{}), errors.As(err, &errUnregonizedProperty{}),
+		errors.As(err, &errInvalidProperties{}):
 		e.logUserError(className)
 	case errors.As(err, &authzerrors.Forbidden{}):
 		e.logUserError(className)
@@ -976,6 +1048,107 @@ func getModuleParams(moduleParams map[string]interface{}) map[string]interface{}
 		return map[string]interface{}{}
 	}
 	return moduleParams
+}
+
+// propertyProjectionParam extracts the raw value of the ?properties query
+// parameter. It distinguishes an absent parameter (nil) from an explicit empty
+// value such as "properties=" (pointer to an empty string), which requests an
+// empty projection. The generated swagger binder cannot tell these apart, since
+// it drops empty query values, therefore the raw request URL is inspected here.
+func propertyProjectionParam(r *http.Request, bound *string) *string {
+	if r != nil && r.URL != nil {
+		if values, present := r.URL.Query()["properties"]; present {
+			raw := ""
+			if len(values) > 0 {
+				raw = values[len(values)-1]
+			}
+			return &raw
+		}
+		return nil
+	}
+	return bound
+}
+
+// parsePropertyProjection turns the raw ?properties value into a deduplicated
+// list of top-level property names, preserving the request order. An empty raw
+// value (an explicit "properties=") is a valid request to return no properties.
+func parsePropertyProjection(raw string) ([]string, error) {
+	if raw == "" {
+		return []string{}, nil
+	}
+
+	parts := strings.Split(raw, ",")
+	names := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for i, part := range parts {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			return nil, fmt.Errorf(
+				"invalid 'properties' parameter: the property name at position %d is empty", i+1)
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// validateProjectedProperties verifies that every requested name is a
+// top-level property of the collection's schema. Unknown names produce an error
+// that lists the offending names together with the available ones.
+func validateProjectedProperties(class *models.Class, names []string) error {
+	if class == nil {
+		return newErrInvalidProperties(fmt.Errorf(
+			"invalid 'properties' parameter: the collection schema could not be loaded"))
+	}
+
+	known := make(map[string]struct{}, len(class.Properties))
+	valid := make([]string, 0, len(class.Properties))
+	for _, prop := range class.Properties {
+		known[prop.Name] = struct{}{}
+		valid = append(valid, prop.Name)
+	}
+	sort.Strings(valid)
+
+	var unknown []string
+	for _, name := range names {
+		if _, ok := known[name]; !ok {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) > 0 {
+		quoted := make([]string, len(unknown))
+		for i, name := range unknown {
+			quoted[i] = "'" + name + "'"
+		}
+		return newErrInvalidProperties(fmt.Errorf(
+			"invalid 'properties' parameter: unknown property name(s) %s for collection %q; valid properties are: %s",
+			strings.Join(quoted, ", "), class.Class, strings.Join(valid, ", ")))
+	}
+	return nil
+}
+
+// projectObjectProperties replaces the object's properties with a map that only
+// contains the whitelisted top-level properties. Property values, including
+// nested objects and arrays, are kept whole. The object id, tenant, class and
+// additional/metadata fields are not touched. An empty whitelist yields an empty
+// (but present) properties object.
+func projectObjectProperties(object *models.Object, names []string) {
+	schema, ok := object.Properties.(map[string]interface{})
+	if !ok {
+		object.Properties = map[string]interface{}{}
+		return
+	}
+
+	projected := make(map[string]interface{}, len(names))
+	for _, name := range names {
+		if value, present := schema[name]; present {
+			projected[name] = value
+		}
+	}
+	object.Properties = projected
 }
 
 func getReplicationProperties(consistencyLvl, nodeName *string) (*additional.ReplicationProperties, error) {
@@ -1050,5 +1223,17 @@ func newErrUnregonizedProperty(err error) errUnregonizedProperty {
 }
 
 func (e errUnregonizedProperty) Error() string {
+	return fmt.Sprintf("%v", e.err)
+}
+
+type errInvalidProperties struct {
+	err error
+}
+
+func newErrInvalidProperties(err error) errInvalidProperties {
+	return errInvalidProperties{err}
+}
+
+func (e errInvalidProperties) Error() string {
 	return fmt.Sprintf("%v", e.err)
 }
