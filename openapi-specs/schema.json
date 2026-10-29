@@ -8690,7 +8690,7 @@
     },
     "/batch/objects": {
       "post": {
-        "description": "Registers multiple data objects in a single request for efficiency. Metadata and schema values for each object are validated.<br/><br/>**Note (idempotence)**:<br/>This operation is idempotent based on the object UUIDs provided. If an object with a given UUID already exists, it will be overwritten (similar to a PUT operation for that specific object within the batch).",
+        "description": "Registers multiple data objects in a single request for efficiency. Metadata and schema values for each object are validated.<br/><br/>**Note (idempotence)**:<br/>This operation is idempotent based on the object UUIDs provided. If an object with a given UUID already exists, it will be overwritten (similar to a PUT operation for that specific object within the batch).<br/><br/>**Note (validate-only)**:<br/>Set the `validate` query parameter to true to run the same validation and vectorization as a regular batch, getting one result per object in request order, without creating any collection, property, or tenant and without storing objects.",
         "operationId": "batch.objects.create",
         "x-serviceIds": [
           "weaviate.local.add"
@@ -8731,6 +8731,13 @@
           },
           {
             "$ref": "#/parameters/CommonConsistencyLevelParameterQuery"
+          },
+          {
+            "name": "validate",
+            "in": "query",
+            "description": "When true, every object is validated and vectorized exactly as for a normal batch create, but no collection, property, or tenant is created, activated, or modified and no objects are stored. The response still reports one result per object in request order, including the validation error of any failed object; objects in the same request are still processed when another object fails. Defaults to false, which performs the regular batch create.",
+            "required": false,
+            "type": "boolean"
           }
         ],
         "responses": {

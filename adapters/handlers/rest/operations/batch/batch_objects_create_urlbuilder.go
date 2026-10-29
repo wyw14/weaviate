@@ -20,11 +20,14 @@ import (
 	"errors"
 	"net/url"
 	golangswaggerpaths "path"
+
+	"github.com/go-openapi/swag"
 )
 
 // BatchObjectsCreateURL generates an URL for the batch objects create operation
 type BatchObjectsCreateURL struct {
 	ConsistencyLevel *string
+	Validate         *bool
 
 	_basePath string
 	// avoid unkeyed usage
@@ -66,6 +69,14 @@ func (o *BatchObjectsCreateURL) Build() (*url.URL, error) {
 	}
 	if consistencyLevelQ != "" {
 		qs.Set("consistency_level", consistencyLevelQ)
+	}
+
+	var validateQ string
+	if o.Validate != nil {
+		validateQ = swag.FormatBool(*o.Validate)
+	}
+	if validateQ != "" {
+		qs.Set("validate", validateQ)
 	}
 
 	_result.RawQuery = qs.Encode()

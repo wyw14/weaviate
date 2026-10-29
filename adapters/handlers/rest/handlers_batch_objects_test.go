@@ -17,9 +17,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-openapi/runtime"
+	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/strfmt"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
@@ -179,4 +181,125 @@ func (f *fakeBatchManager) AddObjects(context.Context, *models.Principal, []*mod
 	[]*string, *additional.ReplicationProperties,
 ) (objects.BatchObjects, error) {
 	return nil, f.err
+}
+
+// routingBatchManager records which batch entrypoint the handler chose.
+type routingBatchManager struct {
+	batchObjectsManager
+	addCalled      bool
+	validateCalled bool
+	result         objects.BatchObjects
+}
+
+func (f *routingBatchManager) AddObjects(context.Context, *models.Principal, []*models.Object,
+	[]*string, *additional.ReplicationProperties,
+) (objects.BatchObjects, error) {
+	f.addCalled = true
+	return f.result, nil
+}
+
+func (f *routingBatchManager) ValidateObjects(context.Context, *models.Principal, []*models.Object,
+	[]*string, *additional.ReplicationProperties,
+) (objects.BatchObjects, error) {
+	f.validateCalled = true
+	return f.result, nil
+}
+
+func validateBoolPtr(v bool) *bool { return &v }
+
+// Pins that validate=true routes to ValidateObjects while the absent flag and
+// validate=false keep the regular create path; both reuse the same response.
+func TestBatchObjectHandlers_AddObjects_ValidateRouting(t *testing.T) {
+	tests := []struct {
+		name         string
+		validate     *bool
+		wantValidate bool
+		wantAdd      bool
+	}{
+		{name: "flag absent creates", validate: nil, wantAdd: true},
+		{name: "flag false creates", validate: validateBoolPtr(false), wantAdd: true},
+		{name: "flag true validates", validate: validateBoolPtr(true), wantValidate: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := &routingBatchManager{result: objects.BatchObjects{}}
+			h := &batchObjectHandlers{manager: mgr, metricRequestsTotal: stubRequestsTotal{}}
+
+			ctx, _ := restCtx.WithBatchNamespaceSlot(context.Background())
+			r := httptest.NewRequest(http.MethodPost, "/v1/batch/objects", nil).WithContext(ctx)
+
+			res := h.addObjects(batch.BatchObjectsCreateParams{
+				HTTPRequest: r,
+				Validate:    tc.validate,
+				Body: batch.BatchObjectsCreateBody{
+					Objects: []*models.Object{{Class: "Foo"}},
+				},
+			}, nil)
+
+			require.IsType(t, &batch.BatchObjectsCreateOK{}, res)
+			assert.Equal(t, tc.wantAdd, mgr.addCalled)
+			assert.Equal(t, tc.wantValidate, mgr.validateCalled)
+		})
+	}
+}
+
+// Pins the generated binder for the validate query parameter.
+func TestBatchObjectsCreateParams_BindValidate(t *testing.T) {
+	route := &middleware.MatchedRoute{Consumer: runtime.JSONConsumer()}
+
+	bind := func(rawQuery string) (*bool, error) {
+		r := httptest.NewRequest(http.MethodPost, "/v1/batch/objects?"+rawQuery,
+			strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		var p batch.BatchObjectsCreateParams
+		err := p.BindRequest(r, route)
+		return p.Validate, err
+	}
+
+	v, err := bind("validate=true")
+	require.NoError(t, err)
+	require.NotNil(t, v)
+	assert.True(t, *v)
+
+	v, err = bind("validate=false")
+	require.NoError(t, err)
+	require.NotNil(t, v)
+	assert.False(t, *v)
+
+	v, err = bind("")
+	require.NoError(t, err)
+	assert.Nil(t, v, "the parameter stays unset when absent")
+
+	// The binder follows go-openapi's permissive bool conversion; the spec
+	// validation middleware rejects non-boolean values before the handler.
+	v, err = bind("validate=maybe")
+	require.NoError(t, err)
+	require.NotNil(t, v)
+	assert.False(t, *v)
+}
+
+// A row rejected before it ever carried an object (empty class, null entry)
+// must still render as FAILED instead of panicking on a nil object.
+func TestObjectsResponse_FailedRowWithoutObject(t *testing.T) {
+	h := &batchObjectHandlers{}
+	input := objects.BatchObjects{
+		{OriginalIndex: 0, Err: errors.New("object has an empty class")},
+		{
+			OriginalIndex: 1,
+			Object:        &models.Object{Class: "Foo"},
+			UUID:          "11111111-2222-3333-4444-555555555555",
+		},
+	}
+
+	got := h.objectsResponse(nil, input)
+
+	require.Len(t, got, 2)
+	require.NotNil(t, got[0].Result.Status)
+	assert.Equal(t, models.ObjectsGetResponseAO2ResultStatusFAILED, *got[0].Result.Status)
+	assert.NotNil(t, got[0].Result.Errors)
+	require.NotNil(t, got[1].Result.Status)
+	assert.Equal(t, models.ObjectsGetResponseAO2ResultStatusSUCCESS, *got[1].Result.Status)
+	assert.Nil(t, got[1].Result.Errors)
+	assert.Equal(t, strfmt.UUID("11111111-2222-3333-4444-555555555555"), got[1].Object.ID)
 }

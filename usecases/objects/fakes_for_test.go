@@ -67,6 +67,8 @@ type fakeSchemaManager struct {
 	MaxWaitedSchemaVersion uint64
 	WaitedVersions         []uint64
 	GetClassCalls          []string
+	TenantActivations      int
+	AddPropertyCalls       int
 }
 
 func (f *fakeSchemaManager) UpdatePropertyAddDataType(ctx context.Context, principal *models.Principal,
@@ -194,6 +196,7 @@ func (f *fakeSchemaManager) AddClass(ctx context.Context, principal *models.Prin
 func (f *fakeSchemaManager) AddClassProperty(ctx context.Context, principal *models.Principal,
 	className string, merge bool, newProps ...*models.Property,
 ) (*models.Class, uint64, error) {
+	f.AddPropertyCalls++
 	if f.AddClassPropertyErr != nil {
 		return nil, 0, f.AddClassPropertyErr
 	}
@@ -254,6 +257,7 @@ func (f *fakeSchemaManager) ResolveAlias(alias string) string {
 }
 
 func (f *fakeSchemaManager) EnsureTenantActiveForWrite(ctx context.Context, class string, tenants ...string) (uint64, error) {
+	f.TenantActivations++
 	return 0, nil
 }
 

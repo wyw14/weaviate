@@ -2168,7 +2168,7 @@ func init() {
     },
     "/batch/objects": {
       "post": {
-        "description": "Registers multiple data objects in a single request for efficiency. Metadata and schema values for each object are validated.\u003cbr/\u003e\u003cbr/\u003e**Note (idempotence)**:\u003cbr/\u003eThis operation is idempotent based on the object UUIDs provided. If an object with a given UUID already exists, it will be overwritten (similar to a PUT operation for that specific object within the batch).",
+        "description": "Registers multiple data objects in a single request for efficiency. Metadata and schema values for each object are validated.\u003cbr/\u003e\u003cbr/\u003e**Note (idempotence)**:\u003cbr/\u003eThis operation is idempotent based on the object UUIDs provided. If an object with a given UUID already exists, it will be overwritten (similar to a PUT operation for that specific object within the batch).\u003cbr/\u003e\u003cbr/\u003e**Note (validate-only)**:\u003cbr/\u003eSet the ` + "`" + `validate` + "`" + ` query parameter to true to run the same validation and vectorization as a regular batch, getting one result per object in request order, without creating any collection, property, or tenant and without storing objects.",
         "tags": [
           "batch",
           "objects"
@@ -2211,6 +2211,12 @@ func init() {
           },
           {
             "$ref": "#/parameters/CommonConsistencyLevelParameterQuery"
+          },
+          {
+            "type": "boolean",
+            "description": "When true, every object is validated and vectorized exactly as for a normal batch create, but no collection, property, or tenant is created, activated, or modified and no objects are stored. The response still reports one result per object in request order, including the validation error of any failed object; objects in the same request are still processed when another object fails. Defaults to false, which performs the regular batch create.",
+            "name": "validate",
+            "in": "query"
           }
         ],
         "responses": {
@@ -14977,7 +14983,7 @@ func init() {
     },
     "/batch/objects": {
       "post": {
-        "description": "Registers multiple data objects in a single request for efficiency. Metadata and schema values for each object are validated.\u003cbr/\u003e\u003cbr/\u003e**Note (idempotence)**:\u003cbr/\u003eThis operation is idempotent based on the object UUIDs provided. If an object with a given UUID already exists, it will be overwritten (similar to a PUT operation for that specific object within the batch).",
+        "description": "Registers multiple data objects in a single request for efficiency. Metadata and schema values for each object are validated.\u003cbr/\u003e\u003cbr/\u003e**Note (idempotence)**:\u003cbr/\u003eThis operation is idempotent based on the object UUIDs provided. If an object with a given UUID already exists, it will be overwritten (similar to a PUT operation for that specific object within the batch).\u003cbr/\u003e\u003cbr/\u003e**Note (validate-only)**:\u003cbr/\u003eSet the ` + "`" + `validate` + "`" + ` query parameter to true to run the same validation and vectorization as a regular batch, getting one result per object in request order, without creating any collection, property, or tenant and without storing objects.",
         "tags": [
           "batch",
           "objects"
@@ -15022,6 +15028,12 @@ func init() {
             "type": "string",
             "description": "Determines how many replicas must acknowledge a request before it is considered successful.",
             "name": "consistency_level",
+            "in": "query"
+          },
+          {
+            "type": "boolean",
+            "description": "When true, every object is validated and vectorized exactly as for a normal batch create, but no collection, property, or tenant is created, activated, or modified and no objects are stored. The response still reports one result per object in request order, including the validation error of any failed object; objects in the same request are still processed when another object fails. Defaults to false, which performs the regular batch create.",
+            "name": "validate",
             "in": "query"
           }
         ],

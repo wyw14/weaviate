@@ -25,6 +25,7 @@ import (
 	"github.com/go-openapi/runtime"
 	cr "github.com/go-openapi/runtime/client"
 	"github.com/go-openapi/strfmt"
+	"github.com/go-openapi/swag"
 )
 
 // NewBatchObjectsCreateParams creates a new BatchObjectsCreateParams object,
@@ -83,6 +84,12 @@ type BatchObjectsCreateParams struct {
 	   Determines how many replicas must acknowledge a request before it is considered successful.
 	*/
 	ConsistencyLevel *string
+
+	/* Validate.
+
+	   When true, every object is validated and vectorized exactly as for a normal batch create, but no collection, property, or tenant is created, activated, or modified and no objects are stored. The response still reports one result per object in request order, including the validation error of any failed object; objects in the same request are still processed when another object fails. Defaults to false, which performs the regular batch create.
+	*/
+	Validate *bool
 
 	timeout    time.Duration
 	Context    context.Context
@@ -159,6 +166,17 @@ func (o *BatchObjectsCreateParams) SetConsistencyLevel(consistencyLevel *string)
 	o.ConsistencyLevel = consistencyLevel
 }
 
+// WithValidate adds the validate to the batch objects create params
+func (o *BatchObjectsCreateParams) WithValidate(validate *bool) *BatchObjectsCreateParams {
+	o.SetValidate(validate)
+	return o
+}
+
+// SetValidate adds the validate to the batch objects create params
+func (o *BatchObjectsCreateParams) SetValidate(validate *bool) {
+	o.Validate = validate
+}
+
 // WriteToRequest writes these params to a swagger request
 func (o *BatchObjectsCreateParams) WriteToRequest(r runtime.ClientRequest, reg strfmt.Registry) error {
 
@@ -182,6 +200,23 @@ func (o *BatchObjectsCreateParams) WriteToRequest(r runtime.ClientRequest, reg s
 		if qConsistencyLevel != "" {
 
 			if err := r.SetQueryParam("consistency_level", qConsistencyLevel); err != nil {
+				return err
+			}
+		}
+	}
+
+	if o.Validate != nil {
+
+		// query param validate
+		var qrValidate bool
+
+		if o.Validate != nil {
+			qrValidate = *o.Validate
+		}
+		qValidate := swag.FormatBool(qrValidate)
+		if qValidate != "" {
+
+			if err := r.SetQueryParam("validate", qValidate); err != nil {
 				return err
 			}
 		}

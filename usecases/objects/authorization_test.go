@@ -353,6 +353,33 @@ func Test_BatchKinds_Authorization(t *testing.T) {
 			expectedMethod:    mocks.MethodAuthorizeAndRequireActiveNamespace,
 			expectedClass:     "Class",
 		},
+		{ // ValidateObjects runs the same UPDATE authorization as AddObjects
+			methodName: "ValidateObjects",
+			additionalArgs: []interface{}{
+				[]*models.Object{{Class: "class", Tenant: "tenant"}},
+				[]*string{},
+				&additional.ReplicationProperties{},
+			},
+			expectedVerb:      authorization.UPDATE,
+			expectedResources: authorization.ShardsData("class", "tenant"),
+			expectedMethod:    mocks.MethodAuthorize,
+		},
+		{ // ValidateObjects also passes the CREATE gate, just like AddObjects
+			methodName: "ValidateObjects",
+			additionalArgs: []interface{}{
+				[]*models.Object{{Class: "class", Tenant: "tenant"}},
+				[]*string{},
+				&additional.ReplicationProperties{},
+			},
+			precedingCalls: []mocks.AuthZReq{{
+				Principal: principal, Verb: authorization.UPDATE,
+				Resources: authorization.ShardsData("class", "tenant"), Method: mocks.MethodAuthorize,
+			}},
+			expectedVerb:      authorization.CREATE,
+			expectedResources: authorization.ShardsData("class", "tenant"),
+			expectedMethod:    mocks.MethodAuthorizeAndRequireActiveNamespace,
+			expectedClass:     "Class",
+		},
 		{ // AddReferences authorizes UPDATE through the gate only
 			methodName: "AddReferences",
 			additionalArgs: []interface{}{

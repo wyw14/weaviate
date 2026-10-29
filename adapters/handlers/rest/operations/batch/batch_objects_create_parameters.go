@@ -24,6 +24,7 @@ import (
 	"github.com/go-openapi/runtime"
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/strfmt"
+	"github.com/go-openapi/swag"
 	"github.com/go-openapi/validate"
 )
 
@@ -53,6 +54,10 @@ type BatchObjectsCreateParams struct {
 	  In: query
 	*/
 	ConsistencyLevel *string
+	/*When true, every object is validated and vectorized exactly as for a normal batch create, but no collection, property, or tenant is created, activated, or modified and no objects are stored. The response still reports one result per object in request order, including the validation error of any failed object; objects in the same request are still processed when another object fails. Defaults to false, which performs the regular batch create.
+	  In: query
+	*/
+	Validate *bool
 }
 
 // BindRequest both binds and validates a request, it assumes that complex things implement a Validatable(strfmt.Registry) error interface
@@ -98,6 +103,11 @@ func (o *BatchObjectsCreateParams) BindRequest(r *http.Request, route *middlewar
 	if err := o.bindConsistencyLevel(qConsistencyLevel, qhkConsistencyLevel, route.Formats); err != nil {
 		res = append(res, err)
 	}
+
+	qValidate, qhkValidate, _ := qs.GetOK("validate")
+	if err := o.bindValidate(qValidate, qhkValidate, route.Formats); err != nil {
+		res = append(res, err)
+	}
 	if len(res) > 0 {
 		return errors.CompositeValidationError(res...)
 	}
@@ -118,6 +128,29 @@ func (o *BatchObjectsCreateParams) bindConsistencyLevel(rawData []string, hasKey
 		return nil
 	}
 	o.ConsistencyLevel = &raw
+
+	return nil
+}
+
+// bindValidate binds and validates parameter Validate from query.
+func (o *BatchObjectsCreateParams) bindValidate(rawData []string, hasKey bool, formats strfmt.Registry) error {
+	var raw string
+	if len(rawData) > 0 {
+		raw = rawData[len(rawData)-1]
+	}
+
+	// Required: false
+	// AllowEmptyValue: false
+
+	if raw == "" { // empty values pass all other validations
+		return nil
+	}
+
+	value, err := swag.ConvertBool(raw)
+	if err != nil {
+		return errors.InvalidType("validate", "query", "bool", raw)
+	}
+	o.Validate = &value
 
 	return nil
 }

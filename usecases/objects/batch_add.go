@@ -80,6 +80,70 @@ func (b *BatchManager) AddObjectsGRPCAfterAuth(ctx context.Context, principal *m
 	return b.addObjects(ctx, principal, objects, repl, fetchedClasses)
 }
 
+// ValidateObjects runs the same per-object validation and vectorization as
+// AddObjects without any side effects: no class or property is auto-created,
+// no tenant is created or activated for writes, and no object is stored.
+//
+// Results come back in the order of the incoming objects. A failure on one
+// object never keeps another object from receiving its own result; request
+// wide failures (e.g. a missing permission) are still returned as an error.
+func (b *BatchManager) ValidateObjects(ctx context.Context, principal *models.Principal,
+	objects []*models.Object, fields []*string, repl *additional.ReplicationProperties,
+) (BatchObjects, error) {
+	ctx = classcache.ContextWithClassCache(ctx)
+
+	if len(objects) == 0 {
+		return nil, errEmptyObjects
+	}
+
+	batchObjects := make(BatchObjects, len(objects))
+
+	// Resolve every object's class independently: a nil object or an
+	// unresolvable name is that object's validation error, not a reason to
+	// skip the remainder of the batch.
+	classesShards := make(map[string][]string)
+	for i, obj := range objects {
+		batchObjects[i].OriginalIndex = i
+
+		if obj == nil {
+			batchObjects[i].Err = errors.New(validation.ErrorMissingObject)
+			continue
+		}
+
+		cls, _, err := b.resolveNS(principal, obj.Class)
+		if err != nil {
+			batchObjects[i].Err = userInputOrForbidden(err)
+			continue
+		}
+		obj.Class = cls
+		classesShards[cls] = append(classesShards[cls], obj.Tenant)
+	}
+
+	// A missing write permission on any targeted collection still fails the
+	// whole request, just as a normal batch create does; we don't leak any
+	// info a writer could not obtain anyway.
+	knownClasses := map[string]versioned.Class{}
+	for _, className := range slices.Sorted(maps.Keys(classesShards)) {
+		shards := classesShards[className]
+
+		vClass, err := b.schemaManager.GetCachedClassNoAuth(ctx, className)
+		if err != nil {
+			return nil, err
+		}
+		knownClasses[className] = vClass[className]
+
+		if err := b.authorizer.Authorize(ctx, principal, authorization.UPDATE, authorization.ShardsData(className, shards...)...); err != nil {
+			return nil, err
+		}
+		if err := b.authorizer.AuthorizeAndRequireActiveNamespace(ctx, principal, authorization.CREATE, className, authorization.ShardsData(className, shards...)...); err != nil {
+			return nil, err
+		}
+	}
+
+	res, _ := b.validateAndGetVector(ctx, principal, objects, repl, knownClasses, true, batchObjects)
+	return res, nil
+}
+
 func (b *BatchManager) addObjects(ctx context.Context, principal *models.Principal,
 	objects []*models.Object, repl *additional.ReplicationProperties, fetchedClasses map[string]versioned.Class,
 ) (BatchObjects, error) {
@@ -100,7 +164,7 @@ func (b *BatchManager) addObjects(ctx context.Context, principal *models.Princip
 		maxSchemaVersion = max(maxSchemaVersion, vc.Version)
 	}
 
-	batchObjects, schemaVersion := b.validateAndGetVector(ctx, principal, objects, repl, fetchedClasses)
+	batchObjects, schemaVersion := b.validateAndGetVector(ctx, principal, objects, repl, fetchedClasses, false, nil)
 	maxSchemaVersion = max(maxSchemaVersion, schemaVersion)
 
 	schemaVersion, tenantCount, err := b.autoSchemaManager.autoTenants(ctx, principal, objects, fetchedClasses)
@@ -170,12 +234,18 @@ func unanimousLimitExceeded(res BatchObjects) *usagelimits.LimitExceededError {
 	return first
 }
 
+// validateAndGetVector validates every object and runs the per-class batch
+// vectorizer. Results stay in request order. When validateOnly is set no
+// auto-schema runs, so a missing collection or an unknown property is reported
+// on the offending object instead of being created. pre carries per-object
+// errors recorded before this function is reached (e.g. class resolution in
+// validate-only mode); the normal create path passes nil.
 func (b *BatchManager) validateAndGetVector(ctx context.Context, principal *models.Principal,
 	objects []*models.Object, repl *additional.ReplicationProperties, fetchedClasses map[string]versioned.Class,
+	validateOnly bool, pre BatchObjects,
 ) (BatchObjects, uint64) {
 	var (
-		now          = time.Now().UnixNano() / int64(time.Millisecond)
-		batchObjects = make(BatchObjects, len(objects))
+		now = time.Now().UnixNano() / int64(time.Millisecond)
 
 		objectsPerClass       = make(map[string][]*models.Object)
 		originalIndexPerClass = make(map[string][]int)
@@ -183,22 +253,41 @@ func (b *BatchManager) validateAndGetVector(ctx context.Context, principal *mode
 			principal, b.qualifier)
 	)
 
+	batchObjects := pre
+	if batchObjects == nil {
+		batchObjects = make(BatchObjects, len(objects))
+	}
+
 	// validate each object and sort by class (==vectorizer)
 	var maxSchemaVersion uint64
 	for i, obj := range objects {
 		batchObjects[i].OriginalIndex = i
+
+		// already rejected before reaching validation (validate-only pre-pass)
+		if batchObjects[i].Err != nil {
+			continue
+		}
+
+		if obj == nil {
+			batchObjects[i].Err = errors.New(validation.ErrorMissingObject)
+			continue
+		}
 
 		if obj.Class == "" {
 			batchObjects[i].Err = errors.New("object has an empty class")
 			continue
 		}
 
-		schemaVersion, err := b.autoSchemaManager.autoSchema(ctx, principal, true, fetchedClasses, obj)
-		if err != nil {
-			batchObjects[i].Err = err
-		}
-		if schemaVersion > maxSchemaVersion {
-			maxSchemaVersion = schemaVersion
+		// validate-only never creates collections or properties, so the
+		// existing-class checks below report what would be missing on write.
+		if !validateOnly {
+			schemaVersion, err := b.autoSchemaManager.autoSchema(ctx, principal, true, fetchedClasses, obj)
+			if err != nil {
+				batchObjects[i].Err = err
+			}
+			if schemaVersion > maxSchemaVersion {
+				maxSchemaVersion = schemaVersion
+			}
 		}
 
 		if obj.ID == "" {

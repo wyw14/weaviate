@@ -40,6 +40,8 @@ type batchObjectHandlers struct {
 type batchObjectsManager interface {
 	AddObjects(ctx context.Context, principal *models.Principal, objects []*models.Object,
 		fields []*string, repl *additional.ReplicationProperties) (objects.BatchObjects, error)
+	ValidateObjects(ctx context.Context, principal *models.Principal, objects []*models.Object,
+		fields []*string, repl *additional.ReplicationProperties) (objects.BatchObjects, error)
 	AddReferences(ctx context.Context, principal *models.Principal, refs []*models.BatchReference,
 		repl *additional.ReplicationProperties) (objects.BatchReferences, error)
 	DeleteObjects(ctx context.Context, principal *models.Principal, match *models.BatchDeleteMatch,
@@ -59,8 +61,17 @@ func (h *batchObjectHandlers) addObjects(params batch.BatchObjectsCreateParams,
 			WithPayload(errPayloadFromSingleErr(principal, err))
 	}
 
-	objs, err := h.manager.AddObjects(ctx, principal,
-		params.Body.Objects, params.Body.Fields, repl)
+	// validate=true runs the same validation and vectorization as a regular
+	// batch create without persisting anything; the response is identical in
+	// shape and order.
+	var objs objects.BatchObjects
+	if params.Validate != nil && *params.Validate {
+		objs, err = h.manager.ValidateObjects(ctx, principal,
+			params.Body.Objects, params.Body.Fields, repl)
+	} else {
+		objs, err = h.manager.AddObjects(ctx, principal,
+			params.Body.Objects, params.Body.Fields, repl)
+	}
 	if err != nil {
 		h.metricRequestsTotal.logError("", err)
 		if le, ok := usagelimits.AsLimitExceeded(err); ok {
@@ -98,10 +109,17 @@ func (h *batchObjectHandlers) objectsResponse(principal *models.Principal, input
 			status = models.ObjectsGetResponseAO2ResultStatusFAILED
 		}
 
-		object.Object.ID = object.UUID
-		namespacing.StripObjectResponseClass(principal, object.Object)
+		// A rejected row (e.g. an empty class or a null entry) can carry no
+		// object at all. Report its failure on an empty object instead of
+		// dereferencing nil.
+		var obj models.Object
+		if object.Object != nil {
+			object.Object.ID = object.UUID
+			namespacing.StripObjectResponseClass(principal, object.Object)
+			obj = *object.Object
+		}
 		response[i] = &models.ObjectsGetResponse{
-			Object: *object.Object,
+			Object: obj,
 			Result: &models.ObjectsGetResponseAO2Result{
 				Errors: errorResponse,
 				Status: &status,
